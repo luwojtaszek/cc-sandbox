@@ -114,6 +114,20 @@ jobs:
           build-contexts: |
             cc-sandbox:docker=docker-image://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:docker
 
+  # Step 2c: Cleanup untagged images (after build)
+  cleanup-untagged:
+    if: github.event_name == 'push'
+    needs: build-images
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          delete-untagged: true
+          keep-n-untagged: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   # Step 3: Tag images with version (only on release)
   tag-versioned-images:
     if: needs.release-please.outputs.release_created == 'true'
