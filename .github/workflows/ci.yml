@@ -61,8 +61,9 @@ jobs:
           tags: cc-sandbox:bun-full
 
   # Step 2b: Main builds (multi-platform, push latest tags)
+  # Skip on release (Release PR only changes changelog/version, not code)
   build-images:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && needs.release-please.outputs.release_created != 'true'
     runs-on: ubuntu-latest
     needs: release-please
     permissions:
@@ -116,8 +117,8 @@ jobs:
 
   # Step 2c: Cleanup untagged images (after build)
   cleanup-untagged:
-    if: github.event_name == 'push'
-    needs: build-images
+    if: github.event_name == 'push' && needs.release-please.outputs.release_created != 'true'
+    needs: [release-please, build-images]
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -128,9 +129,10 @@ jobs:
           delete-untagged: true
 
   # Step 3: Tag images with version (only on release)
+  # Images already exist from previous merge, just tag them
   tag-versioned-images:
     if: needs.release-please.outputs.release_created == 'true'
-    needs: [release-please, build-images]
+    needs: release-please
     runs-on: ubuntu-latest
     permissions:
       packages: write
