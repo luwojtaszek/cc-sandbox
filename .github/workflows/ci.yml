@@ -131,7 +131,7 @@ jobs:
 
       - name: Tag versioned images
         run: |
-          VERSION=${{ needs.release-please.outputs.tag_name }}
+          VERSION=v${{ needs.release-please.outputs.version }}
 
           for VARIANT in base docker bun-full; do
             docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VARIANT}
