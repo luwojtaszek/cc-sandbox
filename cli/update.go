@@ -51,7 +51,7 @@ Examples:
   cc-sandbox update              # Update CLI and images
   cc-sandbox update --skip-cli   # Update only Docker images
   cc-sandbox update --skip-images # Update only CLI`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			return runUpdate(cfg)
 		},
 	}
@@ -268,10 +268,10 @@ func isRelevantImage(image string) bool {
 	// - ghcr.io/luwojtaszek/cc-sandbox:base (registry)
 
 	for _, tag := range knownImageTags {
-		if image == fmt.Sprintf("cc-sandbox:%s", tag) {
+		if image == "cc-sandbox:"+tag {
 			return true
 		}
-		if image == fmt.Sprintf("%s/cc-sandbox:%s", githubRegistry, tag) {
+		if image == githubRegistry+"/cc-sandbox:"+tag {
 			return true
 		}
 	}
@@ -280,17 +280,16 @@ func isRelevantImage(image string) bool {
 }
 
 func toRegistryImage(image string) string {
-	// Convert local image name to registry image
-	// cc-sandbox:base -> ghcr.io/luwojtaszek/cc-sandbox:base
-	// ghcr.io/luwojtaszek/cc-sandbox:base -> ghcr.io/luwojtaszek/cc-sandbox:base
+	// Convert local image name to registry image.
+	// Example: cc-sandbox:base -> ghcr.io/luwojtaszek/cc-sandbox:base
 
 	if strings.HasPrefix(image, githubRegistry+"/") {
 		return image
 	}
 
 	for _, tag := range knownImageTags {
-		if image == fmt.Sprintf("cc-sandbox:%s", tag) {
-			return fmt.Sprintf("%s/cc-sandbox:%s", githubRegistry, tag)
+		if image == "cc-sandbox:"+tag {
+			return githubRegistry + "/cc-sandbox:" + tag
 		}
 	}
 

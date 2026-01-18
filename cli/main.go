@@ -4,11 +4,19 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+)
+
+const (
+	defaultRegistry = "ghcr.io/luwojtaszek"
+	runtimePodman   = "podman"
+	runtimeDocker   = "docker"
 )
 
 var (
@@ -29,21 +37,62 @@ type Config struct {
 	MountGH      bool
 	MountSSH     bool
 	Interactive  bool
+	Root         *bool  // nil = auto-detect, true = run as root, false = run as claude
+	Runtime      string // "auto", "docker", "podman"
+	GitUserName  string // Override git user.name
+	GitUserEmail string // Override git user.email
+	HostNetwork  bool   // Use host network mode for DinD localhost access
+}
+
+// flagsWithValues contains flags that require a separate value argument.
+// Used by arg parsing to skip values when finding the first positional argument.
+var flagsWithValues = map[string]bool{
+	"-i": true, "--image": true,
+	"-m": true, "--mount": true,
+	"-e": true, "--env": true,
+	"-w": true, "--workdir": true,
+	"--root": true, "--runtime": true,
+	"--git-user-name": true, "--git-user-email": true,
 }
 
 func main() {
 	rootCmd := newRootCmd()
 
 	// Workaround for Cobra treating first positional arg as subcommand.
-	// If first arg is not a flag and not a known subcommand, insert "--"
-	// to tell Cobra to treat remaining args as positional arguments.
+	// Find the first positional argument and insert "--" before it if needed.
 	args := os.Args[1:]
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		knownCommands := map[string]bool{"version": true, "help": true, "update": true}
-		if !knownCommands[args[0]] {
-			newArgs := append([]string{"--"}, args...)
-			rootCmd.SetArgs(newArgs)
+	knownCommands := map[string]bool{"version": true, "help": true, "update": true, "completion": true}
+
+	// Find the index of the first positional argument (not a flag)
+	firstPosIdx := -1
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			// Already has separator, no need to modify
+			firstPosIdx = -1
+			break
 		}
+		if strings.HasPrefix(arg, "-") {
+			// Skip flags: --flag, --flag=value, -f, -f=value
+			// If flag uses = syntax, value is included, no skip needed
+			if !strings.Contains(arg, "=") && flagsWithValues[arg] {
+				// This flag takes a separate value, skip the next arg
+				i++
+			}
+			continue
+		}
+		// Found a positional argument
+		firstPosIdx = i
+		break
+	}
+
+	if firstPosIdx >= 0 && !knownCommands[args[firstPosIdx]] {
+		// Insert "--" before the first positional argument
+		newArgs := make([]string, 0, len(args)+1)
+		newArgs = append(newArgs, args[:firstPosIdx]...)
+		newArgs = append(newArgs, "--")
+		newArgs = append(newArgs, args[firstPosIdx:]...)
+		rootCmd.SetArgs(newArgs)
 	}
 
 	if err := rootCmd.Execute(); err != nil {
@@ -53,6 +102,7 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	cfg := &Config{}
+	var rootFlag string
 
 	rootCmd := &cobra.Command{
 		Use:   "cc-sandbox [flags] [command] [args...]",
@@ -69,7 +119,8 @@ Examples:
 		Version:               fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date),
 		DisableFlagsInUseLine: true,
 		SilenceUsage:          true,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
+			cfg.Root = parseRootFlag(rootFlag)
 			return runSandbox(cfg, args)
 		},
 	}
@@ -83,11 +134,16 @@ Examples:
 	rootCmd.Flags().BoolVar(&cfg.MountGH, "gh", true, "Mount GitHub CLI config from host")
 	rootCmd.Flags().BoolVar(&cfg.MountSSH, "ssh", false, "Mount SSH keys from host")
 	rootCmd.Flags().BoolVarP(&cfg.Interactive, "interactive", "t", true, "Run in interactive mode with TTY")
+	rootCmd.Flags().StringVar(&rootFlag, "root", "auto", "Run as root user: auto, true, or false")
+	rootCmd.Flags().StringVar(&cfg.Runtime, "runtime", "auto", "Container runtime: auto, docker, or podman")
+	rootCmd.Flags().StringVar(&cfg.GitUserName, "git-user-name", "", "Override git user.name in container")
+	rootCmd.Flags().StringVar(&cfg.GitUserEmail, "git-user-email", "", "Override git user.email in container")
+	rootCmd.Flags().BoolVar(&cfg.HostNetwork, "host-network", false, "Use host network mode (enables localhost access for DinD port mappings)")
 
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(_ *cobra.Command, _ []string) {
 			fmt.Printf("cc-sandbox %s\n", version)
 			fmt.Printf("  commit: %s\n", commit)
 			fmt.Printf("  built:  %s\n", date)
@@ -101,8 +157,18 @@ Examples:
 }
 
 func runSandbox(cfg *Config, args []string) error {
-	cfg.Registry = getEnv("CC_SANDBOX_REGISTRY", "")
+	cfg.Registry = getEnv("CC_SANDBOX_REGISTRY", defaultRegistry)
 	cfg.DockerSocket = getEnv("CC_SANDBOX_DOCKER_SOCKET", getDefaultDockerSocket())
+
+	// Environment variable overrides CLI flag for root mode
+	if envRoot := os.Getenv("CC_SANDBOX_ROOT"); envRoot != "" {
+		cfg.Root = parseRootFlag(envRoot)
+	}
+
+	// Environment variable overrides CLI flag for runtime
+	if envRuntime := os.Getenv("CC_SANDBOX_RUNTIME"); envRuntime != "" {
+		cfg.Runtime = envRuntime
+	}
 
 	if cfg.Image == "" {
 		cfg.Image = getEnv("CC_SANDBOX_DEFAULT_IMAGE", "base")
@@ -116,15 +182,27 @@ func runSandbox(cfg *Config, args []string) error {
 		}
 	}
 
+	// Detect runtime
+	runtime := detectRuntime(cfg)
+
 	imageName := buildImageName(cfg.Registry, cfg.Image)
-	dockerArgs := buildDockerArgs(cfg, imageName, args)
 
-	dockerCmd := exec.Command("docker", dockerArgs...)
-	dockerCmd.Stdin = os.Stdin
-	dockerCmd.Stdout = os.Stdout
-	dockerCmd.Stderr = os.Stderr
+	// Pull image if it's from a registry and not available locally
+	if isRegistryImage(imageName) && !imageExistsLocally(imageName, runtime) {
+		fmt.Fprintf(os.Stderr, "Pulling image %s...\n", imageName)
+		if err := pullImage(imageName, runtime); err != nil {
+			return fmt.Errorf("failed to pull image: %w", err)
+		}
+	}
 
-	return dockerCmd.Run()
+	containerArgs := buildContainerArgs(cfg, runtime, imageName, args)
+
+	containerCmd := exec.Command(runtime, containerArgs...)
+	containerCmd.Stdin = os.Stdin
+	containerCmd.Stdout = os.Stdout
+	containerCmd.Stderr = os.Stderr
+
+	return containerCmd.Run()
 }
 
 func buildImageName(registry, image string) string {
@@ -144,17 +222,49 @@ func buildImageName(registry, image string) string {
 	return image
 }
 
-func buildDockerArgs(cfg *Config, imageName string, containerArgs []string) []string {
+func buildContainerArgs(cfg *Config, runtime, imageName string, containerArgs []string) []string {
 	args := []string{"run", "--rm"}
 
 	if cfg.Interactive && isTerminal() {
 		args = append(args, "-it")
 	}
 
-	args = append(args, "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
+	// Use host network mode if requested (enables localhost access for DinD port mappings)
+	if cfg.HostNetwork {
+		args = append(args, "--network=host")
+	}
+
+	// Determine if we should run as root based on runtime and config
+	runAsRoot := shouldUseRootMode(cfg, runtime)
+
+	// Set container user and permission mode based on runtime and root mode
+	if runtime == runtimePodman {
+		// Podman: use --userns=keep-id for UID mapping
+		args = append(args, "--userns=keep-id")
+		args = append(args, "-u", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
+		args = append(args, "-e", "CC_SANDBOX_PERMISSION_MODE=skip")
+	} else if runAsRoot {
+		// Docker rootless: add --userns=host to run as root
+		args = append(args, "--userns=host")
+		args = append(args, "-u", "0:0")
+		// Root in container can't use --dangerously-skip-permissions
+		args = append(args, "-e", "CC_SANDBOX_PERMISSION_MODE=accept")
+	} else {
+		// Regular Docker or OrbStack: use -u flag for proper fixuid support
+		args = append(args, "-u", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
+		args = append(args, "-e", "CC_SANDBOX_PERMISSION_MODE=skip")
+	}
+
 	args = append(args, "-v", cfg.Workdir+":/workspace")
 	args = append(args, "-w", "/workspace")
-	args = append(args, "-v", "cc-sandbox-credentials:/mnt/claude-data")
+
+	// Mount bare repository if running in a git worktree
+	if bareRepoPath := resolveGitWorktreePaths(cfg.Workdir); bareRepoPath != "" {
+		args = append(args, "-v", bareRepoPath+":"+bareRepoPath)
+	}
+
+	// User-specific credentials volume
+	args = append(args, "-v", getCredentialsVolumeName()+":/mnt/claude-data")
 
 	homeDir, _ := os.UserHomeDir()
 
@@ -163,6 +273,15 @@ func buildDockerArgs(cfg *Config, imageName string, containerArgs []string) []st
 		if fileExists(gitconfig) {
 			args = append(args, "-v", gitconfig+":/mnt/host-config/.gitconfig:ro")
 		}
+	}
+
+	// Pass resolved git user config as env vars
+	userName, userEmail := resolveGitUserConfig(cfg)
+	if userName != "" {
+		args = append(args, "-e", "CC_GIT_USER_NAME="+userName)
+	}
+	if userEmail != "" {
+		args = append(args, "-e", "CC_GIT_USER_EMAIL="+userEmail)
 	}
 
 	if cfg.MountGH {
@@ -189,9 +308,15 @@ func buildDockerArgs(cfg *Config, imageName string, containerArgs []string) []st
 		if fileExists(cfg.DockerSocket) {
 			args = append(args, "-v", cfg.DockerSocket+":/var/run/docker.sock")
 			// Add docker socket's group to allow access without sudo
+			// On Linux, the socket typically has a 'docker' group (e.g., GID 999)
+			// On macOS with Docker Desktop/Orbstack, the socket appears as root:root (GID 0)
+			// inside the container, regardless of host permissions
 			if gid := getFileGID(cfg.DockerSocket); gid > 0 {
-				args = append(args, "--group-add", fmt.Sprintf("%d", gid))
+				args = append(args, "--group-add", strconv.Itoa(gid))
 			}
+			// Always add root group (0) for macOS Docker Desktop/Orbstack compatibility
+			// where the socket is mounted as root:root inside the Linux VM
+			args = append(args, "--group-add", "0")
 		} else {
 			fmt.Fprintf(os.Stderr, "Warning: Docker socket not found at %s\n", cfg.DockerSocket)
 		}
@@ -221,6 +346,82 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+// parseRootFlag parses a root flag string value.
+// Returns nil for "auto", true for "true/yes/1", false for "false/no/0".
+func parseRootFlag(flag string) *bool {
+	switch strings.ToLower(flag) {
+	case "true", "yes", "1":
+		v := true
+		return &v
+	case "false", "no", "0":
+		v := false
+		return &v
+	default:
+		return nil
+	}
+}
+
+// detectRuntime determines which container runtime to use.
+func detectRuntime(cfg *Config) string {
+	if cfg.Runtime != "" && cfg.Runtime != "auto" {
+		return cfg.Runtime
+	}
+	// Check if podman is available and docker is not
+	if isPodmanAvailable() && !isDockerAvailable() {
+		return runtimePodman
+	}
+	return runtimeDocker
+}
+
+// shouldUseRootMode determines if container should run as root (no privilege drop).
+// Returns true if root mode is explicitly enabled or auto-detected for rootless Docker.
+func shouldUseRootMode(cfg *Config, runtime string) bool {
+	if cfg.Root != nil {
+		return *cfg.Root
+	}
+	// Podman with --userns=keep-id doesn't need root mode
+	if runtime == runtimePodman {
+		return false
+	}
+	// OrbStack doesn't need root mode (acts like regular Docker)
+	if isOrbStack() {
+		return false
+	}
+	// Auto-detect: use root mode for rootless Docker only
+	return isRootlessDocker()
+}
+
+// getCredentialsVolumeName returns a user-specific volume name.
+func getCredentialsVolumeName() string {
+	// Unix (Linux/macOS): use UID for uniqueness
+	if uid := os.Getuid(); uid >= 0 {
+		return "cc-sandbox-credentials-" + strconv.Itoa(uid)
+	}
+	// Windows: use username (os.Getuid() returns -1)
+	if u, err := user.Current(); err == nil {
+		// Sanitize username for Docker volume name (alphanumeric, dash, underscore)
+		name := sanitizeVolumeName(u.Username)
+		return "cc-sandbox-credentials-" + name
+	}
+	// Fallback (shouldn't happen)
+	return "cc-sandbox-credentials"
+}
+
+// sanitizeVolumeName sanitizes a string for use in Docker volume names.
+// Docker volume names: [a-zA-Z0-9][a-zA-Z0-9_.-]*.
+func sanitizeVolumeName(s string) string {
+	var result strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			result.WriteRune(r)
+		}
+	}
+	if result.Len() == 0 {
+		return "default"
+	}
+	return result.String()
+}
+
 func getDefaultDockerSocket() string {
 	sockets := []string{
 		"/var/run/docker.sock",
@@ -247,8 +448,97 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
+// resolveGitWorktreePaths returns paths that need to be mounted for git worktrees.
+// Returns the path to the bare repository if workdir is a worktree, empty string otherwise.
+func resolveGitWorktreePaths(workdir string) string {
+	gitPath := filepath.Join(workdir, ".git")
+
+	// Check if .git is a file (worktree) rather than a directory (regular repo)
+	info, err := os.Stat(gitPath)
+	if err != nil || info.IsDir() {
+		return ""
+	}
+
+	// Read the gitdir reference from the .git file
+	content, err := os.ReadFile(gitPath)
+	if err != nil {
+		return ""
+	}
+
+	// Parse "gitdir: /path/to/repo.git/worktrees/name"
+	line := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(line, "gitdir: ") {
+		return ""
+	}
+
+	gitdir := strings.TrimPrefix(line, "gitdir: ")
+
+	// The gitdir points to repo.git/worktrees/name
+	// We need to mount the parent bare repo (repo.git)
+	// Go up two levels: worktrees/name -> worktrees -> repo.git
+	if strings.Contains(gitdir, "/worktrees/") {
+		idx := strings.Index(gitdir, "/worktrees/")
+		return gitdir[:idx]
+	}
+
+	return ""
+}
+
+// getGitConfig runs 'git config --global <key>' and returns the value
+func getGitConfig(key string) string {
+	cmd := exec.Command("git", "config", "--global", key)
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// resolveGitUserConfig determines git user.name and user.email
+// Priority: CLI flags > Env vars > Auto-detected from host
+func resolveGitUserConfig(cfg *Config) (string, string) {
+	userName := getGitConfig("user.name")
+	userEmail := getGitConfig("user.email")
+
+	if envName := os.Getenv("CC_SANDBOX_GIT_USER_NAME"); envName != "" {
+		userName = envName
+	}
+	if envEmail := os.Getenv("CC_SANDBOX_GIT_USER_EMAIL"); envEmail != "" {
+		userEmail = envEmail
+	}
+
+	if cfg.GitUserName != "" {
+		userName = cfg.GitUserName
+	}
+	if cfg.GitUserEmail != "" {
+		userEmail = cfg.GitUserEmail
+	}
+
+	return userName, userEmail
+}
+
 func isTerminal() bool {
 	fileInfo, _ := os.Stdout.Stat()
 	return (fileInfo.Mode() & os.ModeCharDevice) != 0
 }
 
+func isRegistryImage(imageName string) bool {
+	// Image is from registry if it contains a domain (has dots before first slash)
+	if idx := strings.Index(imageName, "/"); idx > 0 {
+		domain := imageName[:idx]
+		return strings.Contains(domain, ".")
+	}
+	return false
+}
+
+func imageExistsLocally(imageName, runtime string) bool {
+	cmd := exec.Command(runtime, "image", "inspect", imageName)
+	return cmd.Run() == nil
+}
+
+func pullImage(imageName, runtime string) error {
+	cmd := exec.Command(runtime, "pull", imageName)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}

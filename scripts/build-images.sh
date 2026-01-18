@@ -3,7 +3,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-IMAGE_PREFIX="${IMAGE_PREFIX:-cc-sandbox}"
+IMAGE_PREFIX="${IMAGE_PREFIX:-ghcr.io/luwojtaszek/cc-sandbox}"
 
 cd "$PROJECT_DIR"
 

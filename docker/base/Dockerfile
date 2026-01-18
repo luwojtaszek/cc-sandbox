@@ -45,6 +45,17 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Install gosu for privilege dropping
+ARG GOSU_VERSION=1.17
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) GOSU_ARCH="amd64" ;; \
+        arm64) GOSU_ARCH="arm64" ;; \
+        *) echo "Unsupported architecture" && exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/tianon/gosu/releases/download/${GOSU_VERSION}/gosu-${GOSU_ARCH}" -o /usr/local/bin/gosu \
+    && chmod +x /usr/local/bin/gosu \
+    && gosu --version
+
 # Install fixuid for dynamic UID/GID mapping
 ARG FIXUID_VERSION=0.6.0
 RUN case "$(dpkg --print-architecture)" in \
@@ -79,23 +90,41 @@ RUN mkdir -p /workspace \
 USER claude
 WORKDIR /home/claude
 
-# Install Claude Code using official installer
-RUN curl -fsSL https://claude.ai/install.sh | bash
+# Install Claude Code for claude user and add ~/.local/bin to PATH
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 
-ENV PATH="/home/claude/.local/bin:${PATH}"
-
-# Configure git defaults
+# Configure git defaults for claude user
 RUN git config --global init.defaultBranch main \
     && git config --global core.editor "nano" \
     && git config --global pull.rebase false
 
-# Copy entrypoint script
-COPY --chown=claude:claude entrypoint.sh /usr/local/bin/entrypoint.sh
+# Switch to root for root user setup
 USER root
+
+# Install Claude Code for root user and add ~/.local/bin to PATH
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+
+# Set up root home directory
+RUN mkdir -p /root/.claude \
+    && mkdir -p /root/.config/gh
+
+# Configure git defaults for root user
+RUN git config --global init.defaultBranch main \
+    && git config --global core.editor "nano" \
+    && git config --global pull.rebase false
+
+# Copy entrypoint script (as root, will handle privilege dropping)
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
-USER claude
+
+# Add ~/.local/bin to PATH for non-interactive shells
+ENV PATH="/root/.local/bin:/home/claude/.local/bin:${PATH}"
+
+# NOTE: No final USER directive! Container starts as root.
+# Entrypoint handles privilege dropping based on CC_SANDBOX_USER env var.
 
 WORKDIR /workspace
-
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["claude"]
