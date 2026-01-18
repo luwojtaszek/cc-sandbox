@@ -58,7 +58,10 @@ RUN case "$(dpkg --print-architecture)" in \
     && mkdir -p /etc/fixuid
 
 # Create non-root user 'claude' (no sudo - security best practice)
-RUN groupadd --gid 1000 claude \
+# Remove existing user/group with UID/GID 1000 if present (ubuntu base image has 'ubuntu' user)
+RUN userdel -r ubuntu 2>/dev/null || true \
+    && groupdel ubuntu 2>/dev/null || true \
+    && groupadd --gid 1000 claude \
     && useradd --uid 1000 --gid claude --shell /bin/bash --create-home claude
 
 # Configure fixuid
