@@ -1,4 +1,4 @@
-name: Build Docker Images
+name: CI
 
 on:
   push:
@@ -11,7 +11,25 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/cc-sandbox
 
 jobs:
-  # PR builds: single platform, local image resolution
+  # Step 1: Release Please (only on push to main)
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Step 2a: PR builds (single platform, no push)
   build-images-pr:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -42,10 +60,11 @@ jobs:
           load: true
           tags: cc-sandbox:bun-full
 
-  # Main builds: multi-platform, push to GHCR
-  build-images-main:
+  # Step 2b: Main builds (multi-platform, push latest tags)
+  build-images:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    needs: release-please
     permissions:
       contents: read
       packages: write
@@ -94,3 +113,57 @@ jobs:
           cache-to: type=gha,mode=max
           build-contexts: |
             cc-sandbox:docker=docker-image://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:docker
+
+  # Step 3: Tag images with version (only on release)
+  tag-versioned-images:
+    if: needs.release-please.outputs.release_created == 'true'
+    needs: [release-please, build-images]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag versioned images
+        run: |
+          VERSION=${{ needs.release-please.outputs.tag_name }}
+
+          for VARIANT in base docker bun-full; do
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VARIANT}
+            docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VARIANT} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VARIANT}-${VERSION}
+            docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VARIANT}-${VERSION}
+          done
+
+  # Step 4: Build CLI (only on release)
+  build-cli:
+    if: needs.release-please.outputs.release_created == 'true'
+    needs: release-please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build CLI
+        run: |
+          chmod +x scripts/build-cli.sh
+          ./scripts/build-cli.sh
+        env:
+          VERSION: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: |
+            dist/cc-sandbox-*
+            dist/checksums.txt
