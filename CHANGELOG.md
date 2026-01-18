@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.1.1...cc-sandbox-v1.1.2) (2026-01-18)
+
+
+### Bug Fixes
+
+* resolve CLI argument parsing and Docker permission issues ([7684183](https://github.com/luwojtaszek/cc-sandbox/commit/7684183b9839314757ea0cd45bd06fb6bf16b7d7))
+
 ## [1.1.1](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.1.0...cc-sandbox-v1.1.1) (2026-01-18)
 
 
