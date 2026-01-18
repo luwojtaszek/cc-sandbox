@@ -18,34 +18,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
-# Install Chromium dependencies for agent-browser/Playwright
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libasound2t64 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
-    libcairo2 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libglib2.0-0 \
-    libnspr4 \
-    libnss3 \
-    libpango-1.0-0 \
-    libx11-6 \
-    libxcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxkbcommon0 \
-    libxrandr2 \
-    xvfb \
-    fonts-liberation \
-    fonts-noto-color-emoji \
-    && rm -rf /var/lib/apt/lists/*
-
 # Install additional development tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     dnsutils \
@@ -64,16 +36,15 @@ RUN curl -fsSL https://bun.sh/install | bash
 ENV BUN_INSTALL="/home/claude/.bun"
 ENV PATH="${BUN_INSTALL}/bin:${PATH}"
 
-# Install pnpm via corepack (enabled at build time as root)
+# Install pnpm and agent-browser globally (as root)
 USER root
 RUN corepack enable && corepack prepare pnpm@latest --activate
-USER claude
-
-# Install agent-browser globally
 RUN npm install -g agent-browser
 
-# Install Playwright browsers (Chromium only)
-RUN npx playwright install chromium
+# Install Chromium and system dependencies for agent-browser
+RUN agent-browser install --with-deps
+
+USER claude
 
 # Install useful Python packages
 RUN pip3 install --user --break-system-packages \
