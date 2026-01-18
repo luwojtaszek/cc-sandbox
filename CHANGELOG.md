@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.1.2...cc-sandbox-v1.2.0) (2026-01-18)
+
+
+### Features
+
+* add self-update command for CLI and Docker images ([4daf438](https://github.com/luwojtaszek/cc-sandbox/commit/4daf438e60b0d6577eb23cf0b923a4066491d8db))
+
 ## [1.1.2](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.1.1...cc-sandbox-v1.1.2) (2026-01-18)
 
 
