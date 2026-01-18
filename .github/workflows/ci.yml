@@ -124,9 +124,8 @@ jobs:
     steps:
       - uses: dataaxiom/ghcr-cleanup-action@v1
         with:
+          package: cc-sandbox
           delete-untagged: true
-          keep-n-untagged: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
   # Step 3: Tag images with version (only on release)
   tag-versioned-images:
