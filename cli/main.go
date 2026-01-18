@@ -32,7 +32,21 @@ type Config struct {
 }
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
+	rootCmd := newRootCmd()
+
+	// Workaround for Cobra treating first positional arg as subcommand.
+	// If first arg is not a flag and not a known subcommand, insert "--"
+	// to tell Cobra to treat remaining args as positional arguments.
+	args := os.Args[1:]
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		knownCommands := map[string]bool{"version": true, "help": true}
+		if !knownCommands[args[0]] {
+			newArgs := append([]string{"--"}, args...)
+			rootCmd.SetArgs(newArgs)
+		}
+	}
+
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
