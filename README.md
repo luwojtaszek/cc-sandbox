@@ -14,7 +14,41 @@ A customizable Docker sandbox for running Claude Code in isolated containers wit
 
 ## Quick Start
 
-### Using Docker directly
+### Install CLI (recommended)
+
+```bash
+# One-line install (Linux/macOS)
+curl -fsSL https://raw.githubusercontent.com/luwojtaszek/cc-sandbox/main/install.sh | bash
+
+# Run Claude Code
+cc-sandbox claude
+
+# Run with a prompt
+cc-sandbox claude -p "fix the bug in main.go"
+
+# Continue previous conversation
+cc-sandbox claude -c
+```
+
+### Alternative installation methods
+
+```bash
+# Using Go
+go install github.com/luwojtaszek/cc-sandbox/cli@latest
+
+# Manual download
+curl -LO https://github.com/luwojtaszek/cc-sandbox/releases/latest/download/cc-sandbox-linux-amd64
+chmod +x cc-sandbox-linux-amd64
+sudo mv cc-sandbox-linux-amd64 /usr/local/bin/cc-sandbox
+
+# Install specific version
+CC_SANDBOX_VERSION=v1.0.0 curl -fsSL https://raw.githubusercontent.com/luwojtaszek/cc-sandbox/main/install.sh | bash
+
+# Install to custom directory
+CC_SANDBOX_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/luwojtaszek/cc-sandbox/main/install.sh | bash
+```
+
+### Using Docker directly (without CLI)
 
 ```bash
 # Pull the base image
@@ -26,27 +60,6 @@ docker run -it --rm \
   -w /workspace \
   --user $(id -u):$(id -g) \
   ghcr.io/luwojtaszek/cc-sandbox:base
-```
-
-### Using the CLI (recommended)
-
-```bash
-# Install CLI
-go install github.com/luwojtaszek/cc-sandbox/cli@latest
-
-# Or download from releases
-curl -LO https://github.com/luwojtaszek/cc-sandbox/releases/latest/download/cc-sandbox-linux-amd64
-chmod +x cc-sandbox-linux-amd64
-sudo mv cc-sandbox-linux-amd64 /usr/local/bin/cc-sandbox
-
-# Run Claude Code
-cc-sandbox claude
-
-# Run with a prompt
-cc-sandbox claude -p "fix the bug in main.go"
-
-# Continue previous conversation
-cc-sandbox claude -c
 ```
 
 ## Image Variants
