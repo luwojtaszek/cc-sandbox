@@ -39,7 +39,7 @@ func main() {
 	// to tell Cobra to treat remaining args as positional arguments.
 	args := os.Args[1:]
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		knownCommands := map[string]bool{"version": true, "help": true}
+		knownCommands := map[string]bool{"version": true, "help": true, "update": true}
 		if !knownCommands[args[0]] {
 			newArgs := append([]string{"--"}, args...)
 			rootCmd.SetArgs(newArgs)
@@ -94,6 +94,8 @@ Examples:
 			fmt.Printf("  go:     %s\n", runtime.Version())
 		},
 	})
+
+	rootCmd.AddCommand(newUpdateCmd())
 
 	return rootCmd
 }
