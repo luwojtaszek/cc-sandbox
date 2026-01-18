@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.1.0...cc-sandbox-v1.1.1) (2026-01-18)
+
+
+### Bug Fixes
+
+* resolve Windows cross-compilation and build on release only ([20d6423](https://github.com/luwojtaszek/cc-sandbox/commit/20d642309d6bbff6779aa0e1fcbe33f9a983a68a))
+
 ## [1.1.0](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.0.0...cc-sandbox-v1.1.0) (2026-01-18)
 
 
