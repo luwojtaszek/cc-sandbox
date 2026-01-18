@@ -1,11 +1,39 @@
 #!/bin/bash
 set -e
 
-# Run fixuid to map container user to host user's UID/GID
-eval "$(fixuid -q)"
+# Permission mode: "skip" or "accept"
+# - "skip" uses --dangerously-skip-permissions (for non-root users)
+# - "accept" uses --permission-mode acceptEdits (for root users who can't use skip)
+PERMISSION_MODE="${CC_SANDBOX_PERMISSION_MODE:-skip}"
 
-# Handle Claude credentials
+# Determine Claude flags based on permission mode
+if [ "$PERMISSION_MODE" = "accept" ]; then
+    CLAUDE_FLAGS="--permission-mode acceptEdits"
+else
+    CLAUDE_FLAGS="--dangerously-skip-permissions"
+fi
+
+# Determine if we're running as root or non-root
+CURRENT_UID=$(id -u)
+
+if [ "$CURRENT_UID" = "0" ]; then
+    # Running as root (rootless Docker mode)
+    export HOME="/root"
+    echo "[cc-sandbox] Running as root (rootless Docker mode)"
+else
+    # Running as non-root user - use fixuid to remap UID/GID
+    export HOME="/home/claude"
+
+    # Run fixuid to remap claude user to current UID/GID and fix file ownership
+    # fixuid reads from /etc/fixuid/config.yml
+    eval "$(fixuid -q)"
+
+    echo "[cc-sandbox] Running as user $CURRENT_UID:$(id -g)"
+fi
+
+# Handle Claude credentials (same logic, uses $HOME)
 if [ -d "/mnt/claude-data" ]; then
+    # Ensure .claude directory exists
     mkdir -p /mnt/claude-data/.claude
 
     if [ -d "$HOME/.claude" ] && [ ! -L "$HOME/.claude" ]; then
@@ -20,10 +48,60 @@ if [ -d "/mnt/claude-data" ]; then
     echo "[cc-sandbox] Using persistent credentials from /mnt/claude-data"
 fi
 
+# Handle .claude.json file persistence
+if [ -d "/mnt/claude-data" ]; then
+    # If .claude.json exists in home and is not a symlink, move it to volume
+    if [ -f "$HOME/.claude.json" ] && [ ! -L "$HOME/.claude.json" ]; then
+        # Only copy if volume doesn't already have the file (preserve existing)
+        if [ ! -f "/mnt/claude-data/.claude.json" ]; then
+            cp "$HOME/.claude.json" /mnt/claude-data/.claude.json 2>/dev/null || true
+        fi
+        rm -f "$HOME/.claude.json"
+    fi
+
+    # Create symlink if it doesn't exist
+    if [ ! -L "$HOME/.claude.json" ]; then
+        ln -sf /mnt/claude-data/.claude.json "$HOME/.claude.json"
+    fi
+fi
+
+# Handle Playwright browsers (shared installation at /opt/ms-playwright)
+if [ -d "/opt/ms-playwright" ]; then
+    mkdir -p "$HOME/.cache"
+    if [ ! -L "$HOME/.cache/ms-playwright" ]; then
+        ln -sf /opt/ms-playwright "$HOME/.cache/ms-playwright"
+    fi
+fi
+
 # Handle Git configuration
-if [ -f "/mnt/host-config/.gitconfig" ] && [ ! -f "$HOME/.gitconfig" ]; then
-    ln -sf /mnt/host-config/.gitconfig "$HOME/.gitconfig"
-    echo "[cc-sandbox] Using host .gitconfig"
+# Note: Image has a default .gitconfig with basic settings (init.defaultBranch, etc.)
+# We need to merge host config and apply any env var overrides
+
+if [ -f "/mnt/host-config/.gitconfig" ]; then
+    # Host gitconfig is mounted - import user.name and user.email from it
+    # (keeps image defaults for other settings)
+    HOST_GIT_NAME=$(git config -f /mnt/host-config/.gitconfig user.name 2>/dev/null || true)
+    HOST_GIT_EMAIL=$(git config -f /mnt/host-config/.gitconfig user.email 2>/dev/null || true)
+
+    if [ -n "$HOST_GIT_NAME" ]; then
+        git config --global user.name "$HOST_GIT_NAME"
+        echo "[cc-sandbox] Git user.name from host: $HOST_GIT_NAME"
+    fi
+    if [ -n "$HOST_GIT_EMAIL" ]; then
+        git config --global user.email "$HOST_GIT_EMAIL"
+        echo "[cc-sandbox] Git user.email from host: $HOST_GIT_EMAIL"
+    fi
+fi
+
+# Apply git config from environment variables (highest priority - overrides host)
+if [ -n "$CC_GIT_USER_NAME" ]; then
+    git config --global user.name "$CC_GIT_USER_NAME"
+    echo "[cc-sandbox] Git user.name override: $CC_GIT_USER_NAME"
+fi
+
+if [ -n "$CC_GIT_USER_EMAIL" ]; then
+    git config --global user.email "$CC_GIT_USER_EMAIL"
+    echo "[cc-sandbox] Git user.email override: $CC_GIT_USER_EMAIL"
 fi
 
 # Handle GitHub token
@@ -32,10 +110,26 @@ if [ -n "$GH_TOKEN" ] || [ -n "$GITHUB_TOKEN" ]; then
 fi
 
 # Handle gh config
-if [ -d "/mnt/host-config/gh" ] && [ ! -d "$HOME/.config/gh" ]; then
+if [ -d "/mnt/host-config/gh" ]; then
     mkdir -p "$HOME/.config"
-    ln -sf /mnt/host-config/gh "$HOME/.config/gh"
-    echo "[cc-sandbox] Using host GitHub CLI config"
+    # Remove empty pre-created directory if it exists (from Dockerfile)
+    if [ -d "$HOME/.config/gh" ] && [ -z "$(ls -A "$HOME/.config/gh" 2>/dev/null)" ]; then
+        rmdir "$HOME/.config/gh"
+    fi
+    # Create symlink if directory doesn't exist (or was just removed)
+    if [ ! -e "$HOME/.config/gh" ]; then
+        ln -sf /mnt/host-config/gh "$HOME/.config/gh"
+        echo "[cc-sandbox] Using host GitHub CLI config"
+    fi
+fi
+
+# Configure git to use gh as credential helper for HTTPS auth
+if command -v gh &> /dev/null; then
+    # Check if gh is authenticated (either via config or token)
+    if [ -d "$HOME/.config/gh" ] || [ -n "$GH_TOKEN" ] || [ -n "$GITHUB_TOKEN" ]; then
+        git config --global credential.helper "!gh auth git-credential"
+        echo "[cc-sandbox] Git credential helper configured (gh)"
+    fi
 fi
 
 # Handle SSH keys
@@ -55,15 +149,16 @@ fi
 # Display startup info
 echo "[cc-sandbox] Starting in /workspace"
 echo "[cc-sandbox] User: $(whoami) ($(id -u):$(id -g))"
+echo "[cc-sandbox] Permission mode: $PERMISSION_MODE"
 
-# Execute the command
+# Execute command
 if [ $# -eq 0 ]; then
-    exec claude
+    exec claude $CLAUDE_FLAGS
 fi
 
 if [ "$1" = "claude" ]; then
     shift
-    exec claude --dangerously-skip-permissions "$@"
+    exec claude $CLAUDE_FLAGS "$@"
 fi
 
 exec "$@"
