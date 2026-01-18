@@ -64,13 +64,15 @@ RUN userdel -r ubuntu 2>/dev/null || true \
     && useradd --uid 1000 --gid claude --shell /bin/bash --create-home claude
 
 # Configure fixuid
-RUN echo "user: claude\ngroup: claude\npaths:\n  - /home/claude\n  - /workspace" > /etc/fixuid/config.yml
+RUN echo "user: claude\ngroup: claude\npaths:\n  - /home/claude\n  - /workspace\n  - /mnt/claude-data" > /etc/fixuid/config.yml
 
 # Create workspace and config directories
 RUN mkdir -p /workspace \
+    && mkdir -p /mnt/claude-data \
     && mkdir -p /home/claude/.claude \
     && mkdir -p /home/claude/.config/gh \
     && chown claude:claude /workspace \
+    && chown claude:claude /mnt/claude-data \
     && chown -R claude:claude /home/claude
 
 # Switch to claude user for Claude Code installation
@@ -80,7 +82,7 @@ WORKDIR /home/claude
 # Install Claude Code using official installer
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-ENV PATH="/home/claude/.claude/bin:${PATH}"
+ENV PATH="/home/claude/.local/bin:${PATH}"
 
 # Configure git defaults
 RUN git config --global init.defaultBranch main \
