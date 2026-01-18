@@ -60,6 +60,32 @@ jobs:
           load: true
           tags: cc-sandbox:bun-full
 
+  # Step 2b: PR CLI build - validation only
+  build-cli-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build CLI (all platforms)
+        run: |
+          cd cli
+          for GOOS in linux darwin windows; do
+            for GOARCH in amd64 arm64; do
+              # Skip windows/arm64
+              if [ "$GOOS" = "windows" ] && [ "$GOARCH" = "arm64" ]; then
+                continue
+              fi
+              echo "Building $GOOS/$GOARCH..."
+              GOOS=$GOOS GOARCH=$GOARCH go build -o /dev/null .
+            done
+          done
+          echo "All platforms build successfully"
+
   # Step 2b: Build and push images (only on release)
   build-images:
     if: github.event_name == 'push' && needs.release-please.outputs.release_created == 'true'
