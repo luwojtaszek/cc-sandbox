@@ -22,7 +22,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tree \
     unzip \
     zip \
-    build-essential \
     locales \
     && rm -rf /var/lib/apt/lists/*
 
@@ -68,9 +67,10 @@ RUN userdel -r ubuntu 2>/dev/null || true \
 RUN echo "user: claude\ngroup: claude\npaths:\n  - /home/claude\n  - /workspace" > /etc/fixuid/config.yml
 
 # Create workspace and config directories
-RUN mkdir -p /workspace && chown claude:claude /workspace
-RUN mkdir -p /home/claude/.claude \
+RUN mkdir -p /workspace \
+    && mkdir -p /home/claude/.claude \
     && mkdir -p /home/claude/.config/gh \
+    && chown claude:claude /workspace \
     && chown -R claude:claude /home/claude
 
 # Switch to claude user for Claude Code installation

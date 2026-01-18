@@ -13,8 +13,6 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
-    python3-venv \
-    python3-dev \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
@@ -39,7 +37,7 @@ ENV PATH="${BUN_INSTALL}/bin:${PATH}"
 # Install pnpm and agent-browser globally (as root)
 USER root
 RUN corepack enable && corepack prepare pnpm@latest --activate
-RUN npm install -g agent-browser
+RUN npm install -g agent-browser && npm cache clean --force
 
 # Install Chromium and system dependencies for agent-browser
 RUN agent-browser install --with-deps
@@ -47,7 +45,7 @@ RUN agent-browser install --with-deps
 USER claude
 
 # Install useful Python packages
-RUN pip3 install --user --break-system-packages \
+RUN pip3 install --user --break-system-packages --no-cache-dir \
     httpie \
     rich \
     pyyaml
