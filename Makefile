@@ -1,10 +1,13 @@
-.PHONY: all images cli clean help base docker bun-full install
+.PHONY: all images cli clean help base docker bun-full install lint fmt test check
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 REGISTRY ?=
 IMAGE_PREFIX ?= cc-sandbox
+
+# Tool versions (keep in sync with scripts/agent_checks.sh and lefthook.yml)
+GOLANGCI_LINT_VERSION ?= v1.64.8
 
 LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)"
 
@@ -100,3 +103,23 @@ help:
 	@echo ""
 	@echo "Registry:"
 	@echo "  push        Push images (requires REGISTRY=...)"
+	@echo ""
+	@echo "Code Quality:"
+	@echo "  lint        Run golangci-lint"
+	@echo "  fmt         Run gofmt"
+	@echo "  test        Run tests"
+	@echo "  check       Run all checks (lint, fmt, test)"
+
+# Code Quality
+lint:
+	cd cli && go run github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run
+
+fmt:
+	cd cli && gofmt -l -w .
+
+test:
+	cd cli && go test -v ./...
+
+# Run all checks (same as pre-commit + pre-push)
+check: lint fmt test
+	@echo "All checks passed"

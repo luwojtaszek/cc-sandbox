@@ -13,11 +13,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const (
-	defaultRegistry = "ghcr.io/luwojtaszek"
-	runtimePodman   = "podman"
-	runtimeDocker   = "docker"
-)
+// Constants are defined in constants.go
 
 var (
 	version = "dev"
@@ -157,7 +153,7 @@ Examples:
 }
 
 func runSandbox(cfg *Config, args []string) error {
-	cfg.Registry = getEnv("CC_SANDBOX_REGISTRY", defaultRegistry)
+	cfg.Registry = getEnv("CC_SANDBOX_REGISTRY", DefaultRegistry)
 	cfg.DockerSocket = getEnv("CC_SANDBOX_DOCKER_SOCKET", getDefaultDockerSocket())
 
 	// Environment variable overrides CLI flag for root mode
@@ -222,7 +218,7 @@ func buildImageName(registry, image string) string {
 	return image
 }
 
-func buildContainerArgs(cfg *Config, runtime, imageName string, containerArgs []string) []string {
+func buildContainerArgs(cfg *Config, containerRuntime, imageName string, containerArgs []string) []string {
 	args := []string{"run", "--rm"}
 
 	if cfg.Interactive && isTerminal() {
@@ -235,10 +231,10 @@ func buildContainerArgs(cfg *Config, runtime, imageName string, containerArgs []
 	}
 
 	// Determine if we should run as root based on runtime and config
-	runAsRoot := shouldUseRootMode(cfg, runtime)
+	runAsRoot := shouldUseRootMode(cfg, containerRuntime)
 
 	// Set container user and permission mode based on runtime and root mode
-	if runtime == runtimePodman {
+	if containerRuntime == RuntimePodman {
 		// Podman: use --userns=keep-id for UID mapping
 		args = append(args, "--userns=keep-id")
 		args = append(args, "-u", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
@@ -284,6 +280,11 @@ func buildContainerArgs(cfg *Config, runtime, imageName string, containerArgs []
 		args = append(args, "-e", "CC_GIT_USER_EMAIL="+userEmail)
 	}
 
+	// Pass debug flag to container
+	if os.Getenv("CC_SANDBOX_DEBUG") == "1" {
+		args = append(args, "-e", "CC_SANDBOX_DEBUG=1")
+	}
+
 	if cfg.MountGH {
 		ghConfig := filepath.Join(homeDir, ".config", "gh")
 		if dirExists(ghConfig) {
@@ -314,9 +315,11 @@ func buildContainerArgs(cfg *Config, runtime, imageName string, containerArgs []
 			if gid := getFileGID(cfg.DockerSocket); gid > 0 {
 				args = append(args, "--group-add", strconv.Itoa(gid))
 			}
-			// Always add root group (0) for macOS Docker Desktop/Orbstack compatibility
+			// Add root group (0) only on macOS for Docker Desktop/Orbstack compatibility
 			// where the socket is mounted as root:root inside the Linux VM
-			args = append(args, "--group-add", "0")
+			if runtime.GOOS == "darwin" {
+				args = append(args, "--group-add", "0")
+			}
 		} else {
 			fmt.Fprintf(os.Stderr, "Warning: Docker socket not found at %s\n", cfg.DockerSocket)
 		}
@@ -346,6 +349,13 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+// debugLog prints a debug message if CC_SANDBOX_DEBUG=1 is set.
+func debugLog(format string, args ...interface{}) {
+	if os.Getenv("CC_SANDBOX_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "[DEBUG] "+format+"\n", args...)
+	}
+}
+
 // parseRootFlag parses a root flag string value.
 // Returns nil for "auto", true for "true/yes/1", false for "false/no/0".
 func parseRootFlag(flag string) *bool {
@@ -368,9 +378,9 @@ func detectRuntime(cfg *Config) string {
 	}
 	// Check if podman is available and docker is not
 	if isPodmanAvailable() && !isDockerAvailable() {
-		return runtimePodman
+		return RuntimePodman
 	}
-	return runtimeDocker
+	return RuntimeDocker
 }
 
 // shouldUseRootMode determines if container should run as root (no privilege drop).
@@ -380,7 +390,7 @@ func shouldUseRootMode(cfg *Config, runtime string) bool {
 		return *cfg.Root
 	}
 	// Podman with --userns=keep-id doesn't need root mode
-	if runtime == runtimePodman {
+	if runtime == RuntimePodman {
 		return false
 	}
 	// OrbStack doesn't need root mode (acts like regular Docker)
@@ -392,19 +402,67 @@ func shouldUseRootMode(cfg *Config, runtime string) bool {
 }
 
 // getCredentialsVolumeName returns a user-specific volume name.
+// It also handles migration from the old shared volume name.
 func getCredentialsVolumeName() string {
+	var newVolume string
+
 	// Unix (Linux/macOS): use UID for uniqueness
 	if uid := os.Getuid(); uid >= 0 {
-		return "cc-sandbox-credentials-" + strconv.Itoa(uid)
-	}
-	// Windows: use username (os.Getuid() returns -1)
-	if u, err := user.Current(); err == nil {
+		newVolume = "cc-sandbox-credentials-" + strconv.Itoa(uid)
+	} else if u, err := user.Current(); err == nil {
+		// Windows: use username (os.Getuid() returns -1)
 		// Sanitize username for Docker volume name (alphanumeric, dash, underscore)
 		name := sanitizeVolumeName(u.Username)
-		return "cc-sandbox-credentials-" + name
+		newVolume = "cc-sandbox-credentials-" + name
+	} else {
+		// Fallback (shouldn't happen)
+		return "cc-sandbox-credentials"
 	}
-	// Fallback (shouldn't happen)
-	return "cc-sandbox-credentials"
+
+	// Check if old volume exists and needs migration
+	oldVolume := "cc-sandbox-credentials"
+	if volumeExists(oldVolume) && !volumeExists(newVolume) {
+		if err := migrateCredentialsVolume(oldVolume, newVolume); err != nil {
+			debugLog("Failed to migrate credentials volume: %v", err)
+			// Fall back to old volume if migration fails
+			return oldVolume
+		}
+	}
+
+	return newVolume
+}
+
+// volumeExists checks if a Docker volume exists.
+func volumeExists(name string) bool {
+	cmd := exec.Command("docker", "volume", "inspect", name)
+	return cmd.Run() == nil
+}
+
+// migrateCredentialsVolume copies data from old volume to new volume.
+func migrateCredentialsVolume(oldVolume, newVolume string) error {
+	debugLog("[cc-sandbox] Migrating credentials from %s to %s...", oldVolume, newVolume)
+
+	// Create new volume
+	createCmd := exec.Command("docker", "volume", "create", newVolume)
+	if err := createCmd.Run(); err != nil {
+		return fmt.Errorf("failed to create new volume: %w", err)
+	}
+
+	// Copy data using a temporary container
+	// Use alpine:latest for minimal overhead
+	copyCmd := exec.Command("docker", "run", "--rm",
+		"-v", oldVolume+":/src:ro",
+		"-v", newVolume+":/dst",
+		"alpine:latest",
+		"sh", "-c", "cp -a /src/. /dst/")
+	if err := copyCmd.Run(); err != nil {
+		// Clean up new volume on failure
+		_ = exec.Command("docker", "volume", "rm", newVolume).Run()
+		return fmt.Errorf("failed to copy data: %w", err)
+	}
+
+	debugLog("[cc-sandbox] Credentials migration complete. Old volume (%s) preserved.", oldVolume)
+	return nil
 }
 
 // sanitizeVolumeName sanitizes a string for use in Docker volume names.
@@ -452,35 +510,47 @@ func dirExists(path string) bool {
 // Returns the path to the bare repository if workdir is a worktree, empty string otherwise.
 func resolveGitWorktreePaths(workdir string) string {
 	gitPath := filepath.Join(workdir, ".git")
+	debugLog("Checking git worktree at: %s", gitPath)
 
 	// Check if .git is a file (worktree) rather than a directory (regular repo)
 	info, err := os.Stat(gitPath)
-	if err != nil || info.IsDir() {
+	if err != nil {
+		debugLog("Git worktree check: .git stat failed: %v", err)
+		return ""
+	}
+	if info.IsDir() {
+		debugLog("Git worktree check: .git is a directory (regular repo)")
 		return ""
 	}
 
 	// Read the gitdir reference from the .git file
 	content, err := os.ReadFile(gitPath)
 	if err != nil {
+		debugLog("Git worktree check: failed to read .git file: %v", err)
 		return ""
 	}
 
 	// Parse "gitdir: /path/to/repo.git/worktrees/name"
 	line := strings.TrimSpace(string(content))
 	if !strings.HasPrefix(line, "gitdir: ") {
+		debugLog("Git worktree check: .git file does not contain gitdir reference: %s", line)
 		return ""
 	}
 
 	gitdir := strings.TrimPrefix(line, "gitdir: ")
+	debugLog("Git worktree check: gitdir = %s", gitdir)
 
 	// The gitdir points to repo.git/worktrees/name
 	// We need to mount the parent bare repo (repo.git)
 	// Go up two levels: worktrees/name -> worktrees -> repo.git
 	if strings.Contains(gitdir, "/worktrees/") {
 		idx := strings.Index(gitdir, "/worktrees/")
-		return gitdir[:idx]
+		bareRepo := gitdir[:idx]
+		debugLog("Git worktree check: found bare repository at %s", bareRepo)
+		return bareRepo
 	}
 
+	debugLog("Git worktree check: gitdir does not contain /worktrees/ path")
 	return ""
 }
 

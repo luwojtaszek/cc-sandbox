@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# Debug logging - only show messages when CC_SANDBOX_DEBUG=1
+debug_log() {
+    if [ "$CC_SANDBOX_DEBUG" = "1" ]; then
+        echo "$@"
+    fi
+}
+
 # Permission mode: "skip" or "accept"
 # - "skip" uses --dangerously-skip-permissions (for non-root users)
 # - "accept" uses --permission-mode acceptEdits (for root users who can't use skip)
@@ -19,7 +26,7 @@ CURRENT_UID=$(id -u)
 if [ "$CURRENT_UID" = "0" ]; then
     # Running as root (rootless Docker mode)
     export HOME="/root"
-    echo "[cc-sandbox] Running as root (rootless Docker mode)"
+    debug_log "[cc-sandbox] Running as root (rootless Docker mode)"
 else
     # Running as non-root user - use fixuid to remap UID/GID
     export HOME="/home/claude"
@@ -28,7 +35,7 @@ else
     # fixuid reads from /etc/fixuid/config.yml
     eval "$(fixuid -q)"
 
-    echo "[cc-sandbox] Running as user $CURRENT_UID:$(id -g)"
+    debug_log "[cc-sandbox] Running as user $CURRENT_UID:$(id -g)"
 fi
 
 # Handle Claude credentials (same logic, uses $HOME)
@@ -45,7 +52,7 @@ if [ -d "/mnt/claude-data" ]; then
         ln -sf /mnt/claude-data/.claude "$HOME/.claude"
     fi
 
-    echo "[cc-sandbox] Using persistent credentials from /mnt/claude-data"
+    debug_log "[cc-sandbox] Using persistent credentials from /mnt/claude-data"
 fi
 
 # Handle .claude.json file persistence
@@ -85,28 +92,28 @@ if [ -f "/mnt/host-config/.gitconfig" ]; then
 
     if [ -n "$HOST_GIT_NAME" ]; then
         git config --global user.name "$HOST_GIT_NAME"
-        echo "[cc-sandbox] Git user.name from host: $HOST_GIT_NAME"
+        debug_log "[cc-sandbox] Git user.name from host: $HOST_GIT_NAME"
     fi
     if [ -n "$HOST_GIT_EMAIL" ]; then
         git config --global user.email "$HOST_GIT_EMAIL"
-        echo "[cc-sandbox] Git user.email from host: $HOST_GIT_EMAIL"
+        debug_log "[cc-sandbox] Git user.email from host: $HOST_GIT_EMAIL"
     fi
 fi
 
 # Apply git config from environment variables (highest priority - overrides host)
 if [ -n "$CC_GIT_USER_NAME" ]; then
     git config --global user.name "$CC_GIT_USER_NAME"
-    echo "[cc-sandbox] Git user.name override: $CC_GIT_USER_NAME"
+    debug_log "[cc-sandbox] Git user.name override: $CC_GIT_USER_NAME"
 fi
 
 if [ -n "$CC_GIT_USER_EMAIL" ]; then
     git config --global user.email "$CC_GIT_USER_EMAIL"
-    echo "[cc-sandbox] Git user.email override: $CC_GIT_USER_EMAIL"
+    debug_log "[cc-sandbox] Git user.email override: $CC_GIT_USER_EMAIL"
 fi
 
 # Handle GitHub token
 if [ -n "$GH_TOKEN" ] || [ -n "$GITHUB_TOKEN" ]; then
-    echo "[cc-sandbox] GitHub token detected in environment"
+    debug_log "[cc-sandbox] GitHub token detected in environment"
 fi
 
 # Handle gh config
@@ -119,7 +126,7 @@ if [ -d "/mnt/host-config/gh" ]; then
     # Create symlink if directory doesn't exist (or was just removed)
     if [ ! -e "$HOME/.config/gh" ]; then
         ln -sf /mnt/host-config/gh "$HOME/.config/gh"
-        echo "[cc-sandbox] Using host GitHub CLI config"
+        debug_log "[cc-sandbox] Using host GitHub CLI config"
     fi
 fi
 
@@ -127,8 +134,14 @@ fi
 if command -v gh &> /dev/null; then
     # Check if gh is authenticated (either via config or token)
     if [ -d "$HOME/.config/gh" ] || [ -n "$GH_TOKEN" ] || [ -n "$GITHUB_TOKEN" ]; then
-        git config --global credential.helper "!gh auth git-credential"
-        echo "[cc-sandbox] Git credential helper configured (gh)"
+        # Only set if no existing credential helper is configured for GitHub
+        EXISTING_HELPER=$(git config --global --get credential.https://github.com.helper 2>/dev/null || true)
+        if [ -z "$EXISTING_HELPER" ]; then
+            git config --global credential.https://github.com.helper "!gh auth git-credential"
+            debug_log "[cc-sandbox] Git credential helper configured (gh)"
+        else
+            debug_log "[cc-sandbox] Using existing credential helper: $EXISTING_HELPER"
+        fi
     fi
 fi
 
@@ -138,18 +151,16 @@ if [ -d "/mnt/host-config/.ssh" ]; then
     cp -rn /mnt/host-config/.ssh/* "$HOME/.ssh/" 2>/dev/null || true
     chmod 700 "$HOME/.ssh"
     chmod 600 "$HOME/.ssh/"* 2>/dev/null || true
-    echo "[cc-sandbox] SSH keys available"
+    debug_log "[cc-sandbox] SSH keys available"
 fi
 
 # Docker socket handling (group-add is handled by CLI via --group-add flag)
 if [ -S "/var/run/docker.sock" ]; then
-    echo "[cc-sandbox] Docker socket available"
+    debug_log "[cc-sandbox] Docker socket available"
 fi
 
 # Display startup info
-echo "[cc-sandbox] Starting in /workspace"
-echo "[cc-sandbox] User: $(whoami) ($(id -u):$(id -g))"
-echo "[cc-sandbox] Permission mode: $PERMISSION_MODE"
+debug_log "[cc-sandbox] Starting in /workspace | User: $(whoami) ($(id -u):$(id -g)) | Permission mode: $PERMISSION_MODE"
 
 # Execute command
 if [ $# -eq 0 ]; then

@@ -8,7 +8,7 @@ LABEL org.opencontainers.image.description="Claude Code Sandbox - Full Developme
 LABEL org.opencontainers.image.licenses="MIT"
 
 # Install Python 3, pip, Playwright dependencies, and additional development tools (already root from docker image)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN mkdir -p /var/lib/apt/lists/partial && apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     dnsutils \
@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nano \
     p7zip-full \
     # Playwright/Chromium dependencies for Ubuntu 24.04
+    # Note: agent-browser install --with-deps doesn't properly install these in Docker
     libglib2.0-0t64 \
     libnspr4 \
     libnss3 \
@@ -45,9 +46,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Bun for claude user
 USER claude
 RUN curl -fsSL https://bun.sh/install | bash
-USER root
 
 # Install Bun for root user
+USER root
 RUN curl -fsSL https://bun.sh/install | bash
 
 # Set Bun paths for both users
@@ -61,7 +62,6 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 # Install pnpm, agent-browser, and Chromium with dependencies
 RUN corepack enable && corepack prepare pnpm@latest --activate \
     && npm install -g agent-browser \
-    && npx playwright install-deps chromium \
     && agent-browser install --with-deps \
     && chmod -R 755 /opt/ms-playwright \
     && npm cache clean --force \
@@ -74,9 +74,9 @@ RUN pip3 install --user --break-system-packages --no-cache-dir \
     httpie \
     rich \
     pyyaml
-USER root
 
 # Install useful Python packages for root user
+USER root
 RUN pip3 install --user --break-system-packages --no-cache-dir \
     httpie \
     rich \

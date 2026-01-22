@@ -7,11 +7,36 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+)
+
+// Cached detection results
+var (
+	rootlessDockerOnce   sync.Once
+	rootlessDockerResult bool
+
+	orbStackOnce   sync.Once
+	orbStackResult bool
+
+	podmanAvailableOnce   sync.Once
+	podmanAvailableResult bool
+
+	dockerAvailableOnce   sync.Once
+	dockerAvailableResult bool
 )
 
 // isRootlessDocker detects if Docker is running in rootless mode.
-// It uses multiple detection methods for reliability.
+// Results are cached for the lifetime of the process.
 func isRootlessDocker() bool {
+	rootlessDockerOnce.Do(func() {
+		rootlessDockerResult = detectRootlessDocker()
+	})
+	return rootlessDockerResult
+}
+
+// detectRootlessDocker performs the actual rootless Docker detection.
+// It uses multiple detection methods for reliability.
+func detectRootlessDocker() bool {
 	// Method 1: Check docker info output for rootless security option
 	cmd := exec.Command("docker", "info", "--format", "{{.SecurityOptions}}")
 	output, err := cmd.Output()
@@ -40,19 +65,36 @@ func isRootlessDocker() bool {
 }
 
 // isPodmanAvailable checks if podman is available on the system.
+// Results are cached for the lifetime of the process.
 func isPodmanAvailable() bool {
-	cmd := exec.Command("podman", "--version")
-	return cmd.Run() == nil
+	podmanAvailableOnce.Do(func() {
+		cmd := exec.Command("podman", "--version")
+		podmanAvailableResult = cmd.Run() == nil
+	})
+	return podmanAvailableResult
 }
 
 // isDockerAvailable checks if docker is available on the system.
+// Results are cached for the lifetime of the process.
 func isDockerAvailable() bool {
-	cmd := exec.Command("docker", "--version")
-	return cmd.Run() == nil
+	dockerAvailableOnce.Do(func() {
+		cmd := exec.Command("docker", "--version")
+		dockerAvailableResult = cmd.Run() == nil
+	})
+	return dockerAvailableResult
 }
 
 // isOrbStack detects if Docker is running via OrbStack (macOS).
+// Results are cached for the lifetime of the process.
 func isOrbStack() bool {
+	orbStackOnce.Do(func() {
+		orbStackResult = detectOrbStack()
+	})
+	return orbStackResult
+}
+
+// detectOrbStack performs the actual OrbStack detection.
+func detectOrbStack() bool {
 	// Check if socket path contains orbstack
 	socket := getDefaultDockerSocket()
 	if strings.Contains(socket, "orbstack") {

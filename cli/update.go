@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,14 +15,10 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/semver"
 )
 
-const (
-	githubRepo     = "luwojtaszek/cc-sandbox"
-	githubRegistry = "ghcr.io/luwojtaszek"
-)
-
-var knownImageTags = []string{"base", "docker", "bun-full"}
+// Constants are defined in constants.go
 
 type UpdateConfig struct {
 	SkipCLI    bool
@@ -117,11 +115,30 @@ func updateCLI(force bool) (bool, error) {
 		return false, nil
 	}
 
-	// Normalize versions for comparison (remove 'v' prefix if present)
-	latestNorm := strings.TrimPrefix(latestVersion, "v")
-	currentNorm := strings.TrimPrefix(currentVersion, "v")
+	// Compare versions using semver
+	// Ensure both versions have 'v' prefix for semver.Compare
+	latestSemver := latestVersion
+	if !strings.HasPrefix(latestSemver, "v") {
+		latestSemver = "v" + latestSemver
+	}
+	currentSemver := currentVersion
+	if !strings.HasPrefix(currentSemver, "v") {
+		currentSemver = "v" + currentSemver
+	}
 
-	if !force && latestNorm == currentNorm {
+	// Use semver comparison if both are valid semver, otherwise fall back to string comparison
+	var needsUpdate bool
+	if semver.IsValid(latestSemver) && semver.IsValid(currentSemver) {
+		// semver.Compare returns: -1 if current < latest, 0 if equal, 1 if current > latest
+		needsUpdate = semver.Compare(currentSemver, latestSemver) < 0
+	} else {
+		// Fallback to string comparison for non-semver versions
+		latestNorm := strings.TrimPrefix(latestVersion, "v")
+		currentNorm := strings.TrimPrefix(currentVersion, "v")
+		needsUpdate = latestNorm != currentNorm
+	}
+
+	if !force && !needsUpdate {
 		fmt.Printf("\033[32m[OK]\033[0m CLI is already at latest version (%s)\n", currentVersion)
 		return false, nil
 	}
@@ -148,14 +165,17 @@ func updateCLI(force bool) (bool, error) {
 		suffix = ".exe"
 	}
 
-	downloadURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/cc-sandbox-%s-%s%s",
-		githubRepo, latestVersion, osName, arch, suffix)
+	binaryFilename := fmt.Sprintf("cc-sandbox-%s-%s%s", osName, arch, suffix)
+	binaryURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s",
+		GitHubRepo, latestVersion, binaryFilename)
+	checksumURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/checksums.txt",
+		GitHubRepo, latestVersion)
 
-	tempFile, err := downloadFile(downloadURL)
+	tempFile, err := downloadAndVerify(binaryURL, checksumURL, binaryFilename)
 	if err != nil {
 		return false, fmt.Errorf("failed to download update: %w", err)
 	}
-	defer os.Remove(tempFile)
+	defer func() { _ = os.Remove(tempFile) }()
 
 	// Replace executable
 	err = replaceBinary(execPath, tempFile)
@@ -210,13 +230,13 @@ func updateImages() (bool, error) {
 }
 
 func getLatestVersion() (string, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo)
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", GitHubRepo)
 
 	resp, err := http.Get(url)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
@@ -267,11 +287,11 @@ func isRelevantImage(image string) bool {
 	// - cc-sandbox:base, cc-sandbox:docker, cc-sandbox:bun-full (local)
 	// - ghcr.io/luwojtaszek/cc-sandbox:base (registry)
 
-	for _, tag := range knownImageTags {
+	for _, tag := range KnownImageTags {
 		if image == "cc-sandbox:"+tag {
 			return true
 		}
-		if image == githubRegistry+"/cc-sandbox:"+tag {
+		if image == DefaultRegistry+"/cc-sandbox:"+tag {
 			return true
 		}
 	}
@@ -283,13 +303,13 @@ func toRegistryImage(image string) string {
 	// Convert local image name to registry image.
 	// Example: cc-sandbox:base -> ghcr.io/luwojtaszek/cc-sandbox:base
 
-	if strings.HasPrefix(image, githubRegistry+"/") {
+	if strings.HasPrefix(image, DefaultRegistry+"/") {
 		return image
 	}
 
-	for _, tag := range knownImageTags {
+	for _, tag := range KnownImageTags {
 		if image == "cc-sandbox:"+tag {
-			return githubRegistry + "/cc-sandbox:" + tag
+			return DefaultRegistry + "/cc-sandbox:" + tag
 		}
 	}
 
@@ -301,7 +321,7 @@ func downloadFile(url string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download failed with status %d", resp.StatusCode)
@@ -311,13 +331,101 @@ func downloadFile(url string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer tempFile.Close()
+	defer func() { _ = tempFile.Close() }()
 
 	_, err = io.Copy(tempFile, resp.Body)
 	if err != nil {
-		os.Remove(tempFile.Name())
+		_ = os.Remove(tempFile.Name())
 		return "", err
 	}
 
 	return tempFile.Name(), nil
+}
+
+// parseChecksumFile parses a checksums.txt file and returns the checksum for the target filename.
+// Format: <sha256hash>  <filename> (two spaces between hash and filename)
+func parseChecksumFile(checksumPath, targetFilename string) (string, error) {
+	file, err := os.Open(checksumPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open checksum file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		// Format: <hash>  <filename> (two spaces) or <hash> <filename> (one space)
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			hash := parts[0]
+			filename := parts[len(parts)-1] // Take last part as filename
+			if filename == targetFilename {
+				return strings.ToLower(hash), nil
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("error reading checksum file: %w", err)
+	}
+
+	return "", fmt.Errorf("checksum not found for %s", targetFilename)
+}
+
+// calculateSHA256 computes the SHA256 hash of a file.
+func calculateSHA256(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file for hashing: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", fmt.Errorf("failed to hash file: %w", err)
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// downloadAndVerify downloads a binary and verifies its SHA256 checksum.
+// Returns the path to the verified binary file.
+func downloadAndVerify(binaryURL, checksumURL, filename string) (string, error) {
+	// Download the checksum file
+	checksumFile, err := downloadFile(checksumURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download checksum file: %w", err)
+	}
+	defer func() { _ = os.Remove(checksumFile) }()
+
+	// Parse expected checksum
+	expectedHash, err := parseChecksumFile(checksumFile, filename)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse checksum: %w", err)
+	}
+
+	// Download the binary
+	binaryFile, err := downloadFile(binaryURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download binary: %w", err)
+	}
+
+	// Calculate actual checksum
+	actualHash, err := calculateSHA256(binaryFile)
+	if err != nil {
+		_ = os.Remove(binaryFile)
+		return "", fmt.Errorf("failed to calculate checksum: %w", err)
+	}
+
+	// Verify checksum
+	if actualHash != expectedHash {
+		_ = os.Remove(binaryFile)
+		return "", fmt.Errorf("checksum verification failed: expected %s, got %s", expectedHash, actualHash)
+	}
+
+	fmt.Println("\033[32m[OK]\033[0m Checksum verified")
+	return binaryFile, nil
 }
