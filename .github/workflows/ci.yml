@@ -52,6 +52,8 @@ jobs:
           context: ./docker/docker
           load: true
           tags: cc-sandbox:docker
+          build-contexts: |
+            ghcr.io/luwojtaszek/cc-sandbox:base=docker-image://cc-sandbox:base
 
       - name: Build bun-full
         uses: docker/build-push-action@v5
@@ -59,6 +61,8 @@ jobs:
           context: ./docker/bun-full
           load: true
           tags: cc-sandbox:bun-full
+          build-contexts: |
+            ghcr.io/luwojtaszek/cc-sandbox:docker=docker-image://cc-sandbox:docker
 
   # Step 2b: PR Go lint and test - validation only
   lint-go-pr:
