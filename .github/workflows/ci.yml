@@ -60,7 +60,27 @@ jobs:
           load: true
           tags: cc-sandbox:bun-full
 
-  # Step 2b: PR CLI build - validation only
+  # Step 2b: PR Go lint and test - validation only
+  lint-go-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: cli
+
+      - name: Run tests
+        run: cd cli && go test -v ./...
+
+  # Step 2c: PR CLI build - validation only
   build-cli-pr:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

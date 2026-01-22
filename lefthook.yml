@@ -1,0 +1,18 @@
+pre-commit:
+  parallel: true
+  commands:
+    go-build:
+      glob: "*.go"
+      run: cd cli && go build ./...
+    go-lint:
+      glob: "*.go"
+      run: cd cli && go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8 run --fix
+    go-fmt:
+      glob: "*.go"
+      run: cd cli && gofmt -l -w .
+
+pre-push:
+  commands:
+    go-test:
+      glob: "*.go"
+      run: cd cli && go test ./...
