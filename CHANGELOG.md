@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.0](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.2.0...cc-sandbox-v1.3.0) (2026-01-22)
+
+
+### Features
+
+* add self-update command and various improvements ([0a8972a](https://github.com/luwojtaszek/cc-sandbox/commit/0a8972a69e27b4829298bb94aaeb441ceda919ed))
+* Code improvements ([ffb1996](https://github.com/luwojtaszek/cc-sandbox/commit/ffb1996d25c0bceee05bde6e126c8675d69df6a0))
+
 ## [1.2.0](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.1.2...cc-sandbox-v1.2.0) (2026-01-18)
 
 
