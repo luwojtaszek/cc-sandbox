@@ -21,6 +21,19 @@ var (
 	date    = "unknown"
 )
 
+const envVarHelpText = `
+Environment Variables:
+  CC_SANDBOX_DEFAULT_IMAGE   Default image tag (default: base)
+  CC_SANDBOX_REGISTRY        Registry prefix for images (default: ghcr.io/luwojtaszek)
+  CC_SANDBOX_GIT_USER_NAME   Override git user.name in container
+  CC_SANDBOX_GIT_USER_EMAIL  Override git user.email in container
+  CC_SANDBOX_DOCKER_IMAGES   Additional images that auto-mount Docker socket (comma-separated)
+  CC_SANDBOX_DOCKER_SOCKET   Docker socket path (default: auto-detected)
+  CC_SANDBOX_ROOT            Run as root: auto, true, or false (default: auto)
+  CC_SANDBOX_RUNTIME         Container runtime: auto, docker, or podman (default: auto)
+  CC_SANDBOX_DEBUG           Enable debug output (set to 1 to enable)
+`
+
 type Config struct {
 	Image        string
 	Registry     string
@@ -121,6 +134,8 @@ Examples:
 		},
 	}
 
+	rootCmd.SetHelpTemplate(rootCmd.HelpTemplate() + envVarHelpText)
+
 	rootCmd.Flags().StringVarP(&cfg.Image, "image", "i", "", "Docker image tag (default: base)")
 	rootCmd.Flags().StringArrayVarP(&cfg.Mounts, "mount", "m", nil, "Additional volume mounts (host:container)")
 	rootCmd.Flags().StringArrayVarP(&cfg.EnvVars, "env", "e", nil, "Environment variables (KEY=value)")
@@ -170,6 +185,9 @@ func runSandbox(cfg *Config, args []string) error {
 		cfg.Image = getEnv("CC_SANDBOX_DEFAULT_IMAGE", "base")
 	}
 
+	// Auto-enable Docker socket for docker and bun-full images
+	applyDockerAutoMount(cfg)
+
 	if cfg.Workdir == "" {
 		var err error
 		cfg.Workdir, err = os.Getwd()
@@ -181,7 +199,7 @@ func runSandbox(cfg *Config, args []string) error {
 	// Detect runtime
 	runtime := detectRuntime(cfg)
 
-	imageName := buildImageName(cfg.Registry, cfg.Image)
+	imageName := resolveImageName(cfg.Registry, cfg.Image, runtime)
 
 	// Pull image if it's from a registry and not available locally
 	if isRegistryImage(imageName) && !imageExistsLocally(imageName, runtime) {
@@ -353,6 +371,27 @@ func getEnv(key, defaultValue string) string {
 func debugLog(format string, args ...interface{}) {
 	if os.Getenv("CC_SANDBOX_DEBUG") == "1" {
 		fmt.Fprintf(os.Stderr, "[DEBUG] "+format+"\n", args...)
+	}
+}
+
+// applyDockerAutoMount auto-enables Docker socket mounting for Docker-enabled images.
+// Built-in images: "docker" and "bun-full"
+// Additional images can be specified via CC_SANDBOX_DOCKER_IMAGES (comma-separated)
+func applyDockerAutoMount(cfg *Config) {
+	// Built-in images that auto-mount Docker
+	if cfg.Image == "docker" || cfg.Image == "bun-full" {
+		cfg.MountDocker = true
+		return
+	}
+
+	// Check user-specified images from environment variable
+	if envImages := os.Getenv("CC_SANDBOX_DOCKER_IMAGES"); envImages != "" {
+		for _, img := range strings.Split(envImages, ",") {
+			if strings.TrimSpace(img) == cfg.Image {
+				cfg.MountDocker = true
+				return
+			}
+		}
 	}
 }
 
@@ -616,9 +655,38 @@ func isRegistryImage(imageName string) bool {
 	return false
 }
 
-func imageExistsLocally(imageName, runtime string) bool {
+// imageExistsLocally checks if a Docker image exists locally.
+// This is a variable to allow mocking in tests.
+var imageExistsLocally = func(imageName, runtime string) bool {
 	cmd := exec.Command(runtime, "image", "inspect", imageName)
 	return cmd.Run() == nil
+}
+
+// resolveImageName determines the final image name, preferring local images over registry.
+// For simple tags (e.g., "golang-full"), checks if cc-sandbox:<tag> exists locally first.
+func resolveImageName(registry, image, runtime string) string {
+	// If image already has a path or domain, use as-is
+	if strings.Contains(image, "/") || strings.Contains(image, ":") && strings.Contains(strings.Split(image, ":")[0], ".") {
+		return image
+	}
+
+	// Build local image name (cc-sandbox:<tag>)
+	localImage := "cc-sandbox:" + image
+	if strings.HasPrefix(image, "cc-sandbox") {
+		localImage = image
+	}
+
+	// Check if local image exists - if so, prefer it over registry
+	if imageExistsLocally(localImage, runtime) {
+		return localImage
+	}
+
+	// Fall back to registry image
+	if registry != "" {
+		return registry + "/" + localImage
+	}
+
+	return localImage
 }
 
 func pullImage(imageName, runtime string) error {

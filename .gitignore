@@ -20,3 +20,4 @@ Thumbs.db
 *.tmp
 *.log
 cli/cli
+.claude/settings.local.json
