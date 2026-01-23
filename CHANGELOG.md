@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.3.2...cc-sandbox-v1.4.0) (2026-01-23)
+
+
+### Features
+
+* docs and cli updates ([44310b0](https://github.com/luwojtaszek/cc-sandbox/commit/44310b0be02d92de17ea9805b17ba1313c9dc385))
+
 ## [1.3.2](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.3.1...cc-sandbox-v1.3.2) (2026-01-23)
 
 
