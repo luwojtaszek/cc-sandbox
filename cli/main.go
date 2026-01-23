@@ -419,9 +419,15 @@ func getCredentialsVolumeName() string {
 		return "cc-sandbox-credentials"
 	}
 
-	// Check if old volume exists and needs migration
+	// Optimization: Check new volume FIRST (most common case - already migrated)
+	// This avoids the old volume check in the common case
+	if volumeExists(newVolume) {
+		return newVolume
+	}
+
+	// Only check old volume if new doesn't exist (migration needed or first run)
 	oldVolume := "cc-sandbox-credentials"
-	if volumeExists(oldVolume) && !volumeExists(newVolume) {
+	if volumeExists(oldVolume) {
 		if err := migrateCredentialsVolume(oldVolume, newVolume); err != nil {
 			debugLog("Failed to migrate credentials volume: %v", err)
 			// Fall back to old volume if migration fails
@@ -554,21 +560,30 @@ func resolveGitWorktreePaths(workdir string) string {
 	return ""
 }
 
-// getGitConfig runs 'git config --global <key>' and returns the value
-func getGitConfig(key string) string {
-	cmd := exec.Command("git", "config", "--global", key)
+// getGitUserConfigBatched retrieves user.name and user.email in a single subprocess call.
+func getGitUserConfigBatched() (name, email string) {
+	cmd := exec.Command("git", "config", "--global", "--get-regexp", "^user\\.(name|email)$")
 	output, err := cmd.Output()
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	return strings.TrimSpace(string(output))
+
+	// Parse output: "user.name John Doe\nuser.email john@example.com\n"
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "user.name ") {
+			name = strings.TrimPrefix(line, "user.name ")
+		} else if strings.HasPrefix(line, "user.email ") {
+			email = strings.TrimPrefix(line, "user.email ")
+		}
+	}
+	return name, email
 }
 
 // resolveGitUserConfig determines git user.name and user.email
 // Priority: CLI flags > Env vars > Auto-detected from host
 func resolveGitUserConfig(cfg *Config) (string, string) {
-	userName := getGitConfig("user.name")
-	userEmail := getGitConfig("user.email")
+	userName, userEmail := getGitUserConfigBatched()
 
 	if envName := os.Getenv("CC_SANDBOX_GIT_USER_NAME"); envName != "" {
 		userName = envName
