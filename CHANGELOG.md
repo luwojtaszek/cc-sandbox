@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.3.1...cc-sandbox-v1.3.2) (2026-01-23)
+
+
+### Bug Fixes
+
+* upgrade Go version to 1.24 in CI for faster CLI binaries ([a9fd612](https://github.com/luwojtaszek/cc-sandbox/commit/a9fd612e4f16cfa25fb48b5b7c4017d0627b0c04))
+
 ## [1.3.1](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.3.0...cc-sandbox-v1.3.1) (2026-01-23)
 
 
