@@ -103,6 +103,42 @@ func TestIsRegistryImage(t *testing.T) {
 	}
 }
 
+func TestResolveImageName(t *testing.T) {
+	tests := []struct {
+		name        string
+		registry    string
+		image       string
+		localExists bool
+		want        string
+	}{
+		// Local image exists - should prefer local
+		{"local golang-full exists", "ghcr.io/user", "golang-full", true, "cc-sandbox:golang-full"},
+		{"local rust-dev exists", "ghcr.io/user", "rust-dev", true, "cc-sandbox:rust-dev"},
+
+		// Local image doesn't exist - should use registry
+		{"no local, use registry", "ghcr.io/user", "golang-full", false, "ghcr.io/user/cc-sandbox:golang-full"},
+		{"no local, empty registry", "", "golang-full", false, "cc-sandbox:golang-full"},
+
+		// Full paths should pass through unchanged
+		{"full path unchanged", "ghcr.io/user", "myregistry.io/custom:tag", false, "myregistry.io/custom:tag"},
+		{"path with slash unchanged", "ghcr.io/user", "user/image:tag", false, "user/image:tag"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Mock imageExistsLocally
+			originalFn := imageExistsLocally
+			imageExistsLocally = func(_, _ string) bool { return tt.localExists }
+			defer func() { imageExistsLocally = originalFn }()
+
+			got := resolveImageName(tt.registry, tt.image, "docker")
+			if got != tt.want {
+				t.Errorf("resolveImageName(%q, %q) = %q, want %q", tt.registry, tt.image, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGetEnv(t *testing.T) {
 	// Set test env var
 	_ = os.Setenv("TEST_VAR_EXISTS", "value")
@@ -123,6 +159,48 @@ func TestGetEnv(t *testing.T) {
 			got := getEnv(tt.key, tt.defVal)
 			if got != tt.want {
 				t.Errorf("getEnv(%q, %q) = %q, want %q", tt.key, tt.defVal, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyDockerAutoMount(t *testing.T) {
+	tests := []struct {
+		name        string
+		image       string
+		envValue    string
+		mountDocker bool
+		wantDocker  bool
+	}{
+		// Built-in behavior
+		{"docker image auto-enables", "docker", "", false, true},
+		{"bun-full image auto-enables", "bun-full", "", false, true},
+		{"base image does not auto-enable", "base", "", false, false},
+		{"explicit --docker on base works", "base", "", true, true},
+		// Env var behavior
+		{"custom image via env var", "golang-full", "golang-full", false, true},
+		{"multiple custom images", "rust-docker", "golang-full,rust-docker", false, true},
+		{"image not in env var list", "python", "golang-full,rust-docker", false, false},
+		{"built-in still works with env var set", "docker", "golang-full", false, true},
+		{"whitespace handling", "golang-full", " golang-full , rust-docker ", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envValue != "" {
+				_ = os.Setenv("CC_SANDBOX_DOCKER_IMAGES", tt.envValue)
+				defer func() { _ = os.Unsetenv("CC_SANDBOX_DOCKER_IMAGES") }()
+			} else {
+				_ = os.Unsetenv("CC_SANDBOX_DOCKER_IMAGES")
+			}
+
+			cfg := &Config{
+				Image:       tt.image,
+				MountDocker: tt.mountDocker,
+			}
+			applyDockerAutoMount(cfg)
+			if cfg.MountDocker != tt.wantDocker {
+				t.Errorf("applyDockerAutoMount() MountDocker = %v, want %v", cfg.MountDocker, tt.wantDocker)
 			}
 		})
 	}
