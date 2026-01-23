@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.3.0...cc-sandbox-v1.3.1) (2026-01-23)
+
+
+### Bug Fixes
+
+* reduce subprocess calls via batching and parallel detection ([72b7fa1](https://github.com/luwojtaszek/cc-sandbox/commit/72b7fa10b337cb0e63632b0d3f56a5718ad8fe48))
+
 ## [1.3.0](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.2.0...cc-sandbox-v1.3.0) (2026-01-22)
 
 
