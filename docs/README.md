@@ -1,57 +1,149 @@
-# cc-sandbox Documentation
+# cc-sandbox
 
-Welcome to the cc-sandbox documentation. This guide covers everything you need to run Claude Code in isolated Docker
-containers.
+Run Claude Code in isolated Docker containers.
+
+## Installation
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/luwojtaszek/cc-sandbox/main/install.sh | bash
+```
 
 ## Quick Start
 
 ```bash
-# Install
-curl -fsSL https://raw.githubusercontent.com/luwojtaszek/cc-sandbox/main/install.sh | bash
-
-# Run
 cc-sandbox claude
 ```
 
-## Documentation
+## Configuration
 
-| Guide                                         | Description                                        |
-|-----------------------------------------------|----------------------------------------------------|
-| [Installation](installation.md)               | Install methods, updating, building from source    |
-| [CLI Reference](cli-reference.md)             | Commands, flags, environment variables             |
-| [Docker Images](images.md)                    | Image variants, contents, building custom images   |
-| [Container Runtimes](container-runtimes.md)   | Docker Desktop, OrbStack, Podman, rootless Docker  |
-| [Credentials & Configuration](credentials.md) | Claude credentials, Git/GitHub/SSH config mounting |
-| [Troubleshooting](troubleshooting.md)         | Common issues and solutions                        |
+Configure via environment variables in your shell profile (`~/.bashrc`, `~/.zshrc`):
 
-## Getting Started Checklist
+### Image Selection
 
-1. **Install the CLI** - Use the one-line installer or `go install`
-2. **Pull an image** - Happens automatically on first run
-3. **Run Claude Code** - `cc-sandbox claude` in any project directory
-4. **Authenticate** - Follow the Claude Code login prompts (one-time)
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CC_SANDBOX_DEFAULT_IMAGE` | Image variant | `base` |
+| `CC_SANDBOX_REGISTRY` | Registry prefix | `ghcr.io/luwojtaszek` |
 
-## Key Concepts
+Available images:
 
-### Images
+- **base** - Node.js, Git, GitHub CLI, Claude Code (~800MB)
+- **docker** - Base + Docker CLI (~900MB)
+- **bun-full** - Full dev: Bun, Python, Playwright (~2GB)
 
-cc-sandbox provides three Docker image variants:
+Example:
+```bash
+export CC_SANDBOX_DEFAULT_IMAGE=docker
+```
 
-- **base** - Minimal: Node.js, Git, GitHub CLI, Claude Code
-- **docker** - Base + Docker CLI for container management
-- **bun-full** - Full dev environment with Bun, Python, Playwright
+### Claude Code Configuration
 
-### Credential Persistence
+Share your Claude skills, agents, and settings.
 
-Your Claude credentials are stored in a Docker volume and persist across container restarts. You only need to
-authenticate once.
+| Variable | Description |
+|----------|-------------|
+| `CC_SANDBOX_CLAUDE_CONFIG` | Path to host `~/.claude` directory |
+| `CC_SANDBOX_CLAUDE_CONFIG_REPO` | Git URL for shared config |
 
-### Host Configuration
+Example:
+```bash
+export CC_SANDBOX_CLAUDE_CONFIG=~/.claude
+# or for team shared config:
+export CC_SANDBOX_CLAUDE_CONFIG_REPO=https://github.com/org/claude-config.git
+```
 
-By default, cc-sandbox mounts your Git and GitHub CLI configuration from the host, so commits and `gh` commands work
-seamlessly.
+#### Config Repo Setup
 
-## Getting Help
+When using `CC_SANDBOX_CLAUDE_CONFIG_REPO`, the entrypoint automatically sets up your configuration:
 
-- [GitHub Issues](https://github.com/luwojtaszek/cc-sandbox/issues) - Bug reports and feature requests
-- [CLI Help](cli-reference.md) - `cc-sandbox --help`
+**Default behavior** (without `install.sh`):
+- Auto-links `skills/*/` directories to `~/.claude/skills/`
+- Auto-links `agents/*.md` files to `~/.claude/agents/`
+- Auto-links `commands/*.md` files to `~/.claude/commands/` (legacy)
+- Auto-links `CLAUDE.md` if present
+- Skips `settings.json` for safety (requires custom install.sh)
+
+**Custom behavior** (with `install.sh`):
+
+If your config repo contains an executable `install.sh`, it runs instead of auto-linking. This gives you full control over setup and is required for handling `settings.json` and `.credentials`.
+
+Example `install.sh`:
+```bash
+#!/bin/bash
+# install.sh - Custom setup for Claude config repo
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Link skills
+if [ -d "$SCRIPT_DIR/skills" ]; then
+    mkdir -p "$HOME/.claude/skills"
+    for skill in "$SCRIPT_DIR/skills"/*/; do
+        [ -d "$skill" ] || continue
+        name=$(basename "$skill")
+        ln -sf "$skill" "$HOME/.claude/skills/$name"
+    done
+fi
+
+# Link agents
+if [ -d "$SCRIPT_DIR/agents" ]; then
+    mkdir -p "$HOME/.claude/agents"
+    for agent in "$SCRIPT_DIR/agents"/*.md; do
+        [ -f "$agent" ] || continue
+        ln -sf "$agent" "$HOME/.claude/agents/$(basename "$agent")"
+    done
+fi
+
+# Apply settings (only if .credentials also exists)
+if [ -f "$SCRIPT_DIR/settings.json" ] && [ -f "$SCRIPT_DIR/.credentials" ]; then
+    cp "$SCRIPT_DIR/settings.json" "$HOME/.claude/settings.json"
+    cp "$SCRIPT_DIR/.credentials" "$HOME/.claude/.credentials"
+fi
+```
+
+### Git Identity
+
+| Variable | Description |
+|----------|-------------|
+| `CC_SANDBOX_GIT_USER_NAME` | Git commit author name |
+| `CC_SANDBOX_GIT_USER_EMAIL` | Git commit author email |
+
+Auto-detected from host git config if not set.
+
+### Custom Images
+
+Build your own image extending cc-sandbox:
+
+```dockerfile
+FROM ghcr.io/luwojtaszek/cc-sandbox:base
+RUN apt-get update && apt-get install -y golang-go
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["claude"]
+```
+
+Then:
+```bash
+docker build -t cc-sandbox:my-image .
+export CC_SANDBOX_DEFAULT_IMAGE=my-image
+```
+
+For Docker socket auto-mount on custom images:
+```bash
+export CC_SANDBOX_DOCKER_IMAGES=my-image
+```
+
+## Credentials
+
+- Claude credentials persist in Docker volume (one-time login)
+- Git/GitHub CLI config auto-mounted from host
+- Use `--ssh` flag for SSH key access
+- `GH_TOKEN`/`GITHUB_TOKEN` passed through automatically
+
+## Updating
+
+```bash
+cc-sandbox update
+```
+
+## Reference
+
+- [CLI Reference](cli-reference.md) - All flags and commands
+- [Troubleshooting](troubleshooting.md) - Common issues

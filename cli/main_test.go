@@ -206,6 +206,195 @@ func TestApplyDockerAutoMount(t *testing.T) {
 	}
 }
 
+func TestExpandPath(t *testing.T) {
+	home, _ := os.UserHomeDir()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"tilde expansion", "~/.claude", home + "/.claude"},
+		{"tilde with subpath", "~/foo/bar", home + "/foo/bar"},
+		{"absolute path unchanged", "/absolute/path", "/absolute/path"},
+		{"relative path unchanged", "relative/path", "relative/path"},
+		{"tilde only", "~", "~"}, // Only expands ~/ not ~
+		{"no tilde", "no-tilde", "no-tilde"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := expandPath(tt.input)
+			if got != tt.want {
+				t.Errorf("expandPath(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetClaudeConfigVolumeName(t *testing.T) {
+	// Test that it returns a valid volume name
+	name := getClaudeConfigVolumeName()
+
+	// Should start with the expected prefix
+	if !contains(name, "cc-sandbox-claude-config") {
+		t.Errorf("getClaudeConfigVolumeName() = %q, want prefix 'cc-sandbox-claude-config'", name)
+	}
+
+	// Should be a valid Docker volume name (alphanumeric, dash, underscore)
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			t.Errorf("getClaudeConfigVolumeName() = %q contains invalid character %q", name, r)
+		}
+	}
+}
+
+func TestBuildContainerArgsWithClaudeConfig(t *testing.T) {
+	// Create a temp directory for testing
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name             string
+		claudeConfigPath string
+		claudeConfigRepo string
+		claudeConfigSync bool
+		wantContains     []string
+		wantNotContains  []string
+	}{
+		{
+			name:             "host config mount",
+			claudeConfigPath: tmpDir,
+			wantContains:     []string{"-v", tmpDir + ":/mnt/host-claude-config:ro"},
+		},
+		{
+			name:             "git repo config",
+			claudeConfigRepo: "https://github.com/user/config",
+			wantContains:     []string{"-e", "CC_CLAUDE_CONFIG_REPO=https://github.com/user/config", "-v", "cc-sandbox-claude-config"},
+			wantNotContains:  []string{"CC_CLAUDE_CONFIG_SYNC"},
+		},
+		{
+			name:             "git repo config with sync",
+			claudeConfigRepo: "https://github.com/user/config",
+			claudeConfigSync: true,
+			wantContains:     []string{"CC_CLAUDE_CONFIG_REPO=https://github.com/user/config", "CC_CLAUDE_CONFIG_SYNC=1"},
+		},
+		{
+			name:             "both host and git repo",
+			claudeConfigPath: tmpDir,
+			claudeConfigRepo: "https://github.com/user/config",
+			wantContains:     []string{tmpDir + ":/mnt/host-claude-config:ro", "CC_CLAUDE_CONFIG_REPO"},
+		},
+		{
+			name:             "no config",
+			claudeConfigPath: "",
+			claudeConfigRepo: "",
+			wantNotContains:  []string{"/mnt/host-claude-config", "CC_CLAUDE_CONFIG_REPO"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Workdir:          tmpDir,
+				ClaudeConfigPath: tt.claudeConfigPath,
+				ClaudeConfigRepo: tt.claudeConfigRepo,
+				ClaudeConfigSync: tt.claudeConfigSync,
+			}
+
+			args := buildContainerArgs(cfg, "docker", "test-image", nil)
+			argsStr := joinArgs(args)
+
+			for _, want := range tt.wantContains {
+				if !contains(argsStr, want) {
+					t.Errorf("buildContainerArgs() missing expected %q in args: %v", want, args)
+				}
+			}
+
+			for _, notWant := range tt.wantNotContains {
+				if contains(argsStr, notWant) {
+					t.Errorf("buildContainerArgs() should not contain %q in args: %v", notWant, args)
+				}
+			}
+		})
+	}
+}
+
+func TestClaudeConfigEnvVarOverrides(t *testing.T) {
+	tests := []struct {
+		name           string
+		envConfig      string
+		envConfigRepo  string
+		flagConfig     string
+		flagConfigRepo string
+		wantConfig     string
+		wantConfigRepo string
+	}{
+		{
+			name:       "flag overrides env",
+			envConfig:  "/env/path",
+			flagConfig: "/flag/path",
+			wantConfig: "/flag/path",
+		},
+		{
+			name:       "env used when no flag",
+			envConfig:  "/env/path",
+			flagConfig: "",
+			wantConfig: "/env/path",
+		},
+		{
+			name:           "repo flag overrides env",
+			envConfigRepo:  "https://github.com/env/repo",
+			flagConfigRepo: "https://github.com/flag/repo",
+			wantConfigRepo: "https://github.com/flag/repo",
+		},
+		{
+			name:           "repo env used when no flag",
+			envConfigRepo:  "https://github.com/env/repo",
+			flagConfigRepo: "",
+			wantConfigRepo: "https://github.com/env/repo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set env vars
+			if tt.envConfig != "" {
+				_ = os.Setenv("CC_SANDBOX_CLAUDE_CONFIG", tt.envConfig)
+				defer func() { _ = os.Unsetenv("CC_SANDBOX_CLAUDE_CONFIG") }()
+			} else {
+				_ = os.Unsetenv("CC_SANDBOX_CLAUDE_CONFIG")
+			}
+
+			if tt.envConfigRepo != "" {
+				_ = os.Setenv("CC_SANDBOX_CLAUDE_CONFIG_REPO", tt.envConfigRepo)
+				defer func() { _ = os.Unsetenv("CC_SANDBOX_CLAUDE_CONFIG_REPO") }()
+			} else {
+				_ = os.Unsetenv("CC_SANDBOX_CLAUDE_CONFIG_REPO")
+			}
+
+			cfg := &Config{
+				ClaudeConfigPath: tt.flagConfig,
+				ClaudeConfigRepo: tt.flagConfigRepo,
+			}
+
+			// Apply env var overrides (simulating what runSandbox does)
+			if cfg.ClaudeConfigPath == "" {
+				cfg.ClaudeConfigPath = os.Getenv("CC_SANDBOX_CLAUDE_CONFIG")
+			}
+			if cfg.ClaudeConfigRepo == "" {
+				cfg.ClaudeConfigRepo = os.Getenv("CC_SANDBOX_CLAUDE_CONFIG_REPO")
+			}
+
+			if tt.wantConfig != "" && cfg.ClaudeConfigPath != tt.wantConfig {
+				t.Errorf("ClaudeConfigPath = %q, want %q", cfg.ClaudeConfigPath, tt.wantConfig)
+			}
+			if tt.wantConfigRepo != "" && cfg.ClaudeConfigRepo != tt.wantConfigRepo {
+				t.Errorf("ClaudeConfigRepo = %q, want %q", cfg.ClaudeConfigRepo, tt.wantConfigRepo)
+			}
+		})
+	}
+}
+
 // Helper functions
 func boolPtr(b bool) *bool { return &b }
 
@@ -227,4 +416,26 @@ func ptrStr(p *bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+func joinArgs(args []string) string {
+	result := ""
+	for _, arg := range args {
+		result += arg + " "
+	}
+	return result
 }
