@@ -104,6 +104,25 @@ cc-sandbox --git=false claude        # Disable git config mounting
 cc-sandbox --gh=false --git=false claude  # Disable all host config
 ```
 
+### Claude Code Configuration
+
+| Flag                           | Description                              | Default |
+|--------------------------------|------------------------------------------|---------|
+| `-C, --claude-config <path>`   | Mount Claude config directory from host  | none    |
+| `--claude-config-repo <url>`   | Git repository URL for Claude config     | none    |
+| `--claude-config-sync`         | Pull latest changes from config repo     | `false` |
+
+```bash
+# Mount local Claude config
+cc-sandbox --claude-config ~/.claude claude
+
+# Use team config from Git repo
+cc-sandbox --claude-config-repo https://github.com/org/claude-config.git claude
+
+# Sync latest from repo
+cc-sandbox --claude-config-repo https://github.com/org/claude-config.git --claude-config-sync claude
+```
+
 ### Git Identity
 
 | Flag                       | Description             | Default       |
@@ -143,17 +162,19 @@ cc-sandbox -t=false claude -p "run tests"  # Non-interactive mode
 
 These environment variables configure cc-sandbox behavior:
 
-| Variable                    | Description                                     | Default               |
-|-----------------------------|-------------------------------------------------|-----------------------|
-| `CC_SANDBOX_DEFAULT_IMAGE`  | Default image tag                               | `base`                |
-| `CC_SANDBOX_REGISTRY`       | Registry prefix for images                      | `ghcr.io/luwojtaszek` |
-| `CC_SANDBOX_DOCKER_IMAGES`  | Additional images that auto-mount Docker socket | none                  |
-| `CC_SANDBOX_DOCKER_SOCKET`  | Docker socket path                              | auto-detected         |
-| `CC_SANDBOX_ROOT`           | Run as root: `auto`, `true`, `false`            | `auto`                |
-| `CC_SANDBOX_RUNTIME`        | Container runtime: `auto`, `docker`, `podman`   | `auto`                |
-| `CC_SANDBOX_GIT_USER_NAME`  | Override git user.name                          | none                  |
-| `CC_SANDBOX_GIT_USER_EMAIL` | Override git user.email                         | none                  |
-| `CC_SANDBOX_DEBUG`          | Enable debug output (`1` to enable)             | none                  |
+| Variable                        | Description                                     | Default               |
+|---------------------------------|-------------------------------------------------|-----------------------|
+| `CC_SANDBOX_DEFAULT_IMAGE`      | Default image tag                               | `base`                |
+| `CC_SANDBOX_REGISTRY`           | Registry prefix for images                      | `ghcr.io/luwojtaszek` |
+| `CC_SANDBOX_DOCKER_IMAGES`      | Additional images that auto-mount Docker socket | none                  |
+| `CC_SANDBOX_DOCKER_SOCKET`      | Docker socket path                              | auto-detected         |
+| `CC_SANDBOX_ROOT`               | Run as root: `auto`, `true`, `false`            | `auto`                |
+| `CC_SANDBOX_RUNTIME`            | Container runtime: `auto`, `docker`, `podman`   | `auto`                |
+| `CC_SANDBOX_GIT_USER_NAME`      | Override git user.name                          | none                  |
+| `CC_SANDBOX_GIT_USER_EMAIL`     | Override git user.email                         | none                  |
+| `CC_SANDBOX_CLAUDE_CONFIG`      | Path to host Claude config directory            | none                  |
+| `CC_SANDBOX_CLAUDE_CONFIG_REPO` | Git repository URL for Claude config            | none                  |
+| `CC_SANDBOX_DEBUG`              | Enable debug output (`1` to enable)             | none                  |
 
 ```bash
 # Use docker image by default
@@ -225,4 +246,20 @@ cc-sandbox \
 ```bash
 # Explicitly use Podman
 cc-sandbox --runtime podman claude
+```
+
+### Claude Code Configuration
+
+```bash
+# Mount local Claude config (skills, settings, etc.)
+cc-sandbox --claude-config ~/.claude claude
+
+# Use team config from Git repo
+cc-sandbox --claude-config-repo https://github.com/org/claude-config.git claude
+
+# Combine team config with local overrides
+cc-sandbox \
+  --claude-config-repo https://github.com/org/team-config.git \
+  --claude-config ~/.claude \
+  claude
 ```

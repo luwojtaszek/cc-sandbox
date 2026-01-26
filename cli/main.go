@@ -23,34 +23,39 @@ var (
 
 const envVarHelpText = `
 Environment Variables:
-  CC_SANDBOX_DEFAULT_IMAGE   Default image tag (default: base)
-  CC_SANDBOX_REGISTRY        Registry prefix for images (default: ghcr.io/luwojtaszek)
-  CC_SANDBOX_GIT_USER_NAME   Override git user.name in container
-  CC_SANDBOX_GIT_USER_EMAIL  Override git user.email in container
-  CC_SANDBOX_DOCKER_IMAGES   Additional images that auto-mount Docker socket (comma-separated)
-  CC_SANDBOX_DOCKER_SOCKET   Docker socket path (default: auto-detected)
-  CC_SANDBOX_ROOT            Run as root: auto, true, or false (default: auto)
-  CC_SANDBOX_RUNTIME         Container runtime: auto, docker, or podman (default: auto)
-  CC_SANDBOX_DEBUG           Enable debug output (set to 1 to enable)
+  CC_SANDBOX_DEFAULT_IMAGE      Default image tag (default: base)
+  CC_SANDBOX_REGISTRY           Registry prefix for images (default: ghcr.io/luwojtaszek)
+  CC_SANDBOX_GIT_USER_NAME      Override git user.name in container
+  CC_SANDBOX_GIT_USER_EMAIL     Override git user.email in container
+  CC_SANDBOX_DOCKER_IMAGES      Additional images that auto-mount Docker socket (comma-separated)
+  CC_SANDBOX_DOCKER_SOCKET      Docker socket path (default: auto-detected)
+  CC_SANDBOX_ROOT               Run as root: auto, true, or false (default: auto)
+  CC_SANDBOX_RUNTIME            Container runtime: auto, docker, or podman (default: auto)
+  CC_SANDBOX_DEBUG              Enable debug output (set to 1 to enable)
+  CC_SANDBOX_CLAUDE_CONFIG      Claude config directory path (e.g., ~/.claude)
+  CC_SANDBOX_CLAUDE_CONFIG_REPO Git repository URL for Claude config
 `
 
 type Config struct {
-	Image        string
-	Registry     string
-	DockerSocket string
-	Workdir      string
-	Mounts       []string
-	EnvVars      []string
-	MountDocker  bool
-	MountGit     bool
-	MountGH      bool
-	MountSSH     bool
-	Interactive  bool
-	Root         *bool  // nil = auto-detect, true = run as root, false = run as claude
-	Runtime      string // "auto", "docker", "podman"
-	GitUserName  string // Override git user.name
-	GitUserEmail string // Override git user.email
-	HostNetwork  bool   // Use host network mode for DinD localhost access
+	Image            string
+	Registry         string
+	DockerSocket     string
+	Workdir          string
+	Mounts           []string
+	EnvVars          []string
+	MountDocker      bool
+	MountGit         bool
+	MountGH          bool
+	MountSSH         bool
+	Interactive      bool
+	Root             *bool  // nil = auto-detect, true = run as root, false = run as claude
+	Runtime          string // "auto", "docker", "podman"
+	GitUserName      string // Override git user.name
+	GitUserEmail     string // Override git user.email
+	HostNetwork      bool   // Use host network mode for DinD localhost access
+	ClaudeConfigPath string // Host path to mount (e.g., ~/.claude)
+	ClaudeConfigRepo string // Git repo URL for config
+	ClaudeConfigSync bool   // Pull latest changes from repo
 }
 
 // flagsWithValues contains flags that require a separate value argument.
@@ -62,6 +67,8 @@ var flagsWithValues = map[string]bool{
 	"-w": true, "--workdir": true,
 	"--root": true, "--runtime": true,
 	"--git-user-name": true, "--git-user-email": true,
+	"-C": true, "--claude-config": true,
+	"--claude-config-repo": true,
 }
 
 func main() {
@@ -150,6 +157,9 @@ Examples:
 	rootCmd.Flags().StringVar(&cfg.GitUserName, "git-user-name", "", "Override git user.name in container")
 	rootCmd.Flags().StringVar(&cfg.GitUserEmail, "git-user-email", "", "Override git user.email in container")
 	rootCmd.Flags().BoolVar(&cfg.HostNetwork, "host-network", false, "Use host network mode (enables localhost access for DinD port mappings)")
+	rootCmd.Flags().StringVarP(&cfg.ClaudeConfigPath, "claude-config", "C", "", "Mount Claude config directory from host")
+	rootCmd.Flags().StringVar(&cfg.ClaudeConfigRepo, "claude-config-repo", "", "Git repository URL for Claude config")
+	rootCmd.Flags().BoolVar(&cfg.ClaudeConfigSync, "claude-config-sync", false, "Pull latest changes from config repo")
 
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "version",
@@ -183,6 +193,14 @@ func runSandbox(cfg *Config, args []string) error {
 
 	if cfg.Image == "" {
 		cfg.Image = getEnv("CC_SANDBOX_DEFAULT_IMAGE", "base")
+	}
+
+	// Environment variable overrides for Claude config
+	if cfg.ClaudeConfigPath == "" {
+		cfg.ClaudeConfigPath = os.Getenv("CC_SANDBOX_CLAUDE_CONFIG")
+	}
+	if cfg.ClaudeConfigRepo == "" {
+		cfg.ClaudeConfigRepo = os.Getenv("CC_SANDBOX_CLAUDE_CONFIG_REPO")
 	}
 
 	// Auto-enable Docker socket for docker and bun-full images
@@ -320,6 +338,23 @@ func buildContainerArgs(cfg *Config, containerRuntime, imageName string, contain
 		sshDir := filepath.Join(homeDir, ".ssh")
 		if dirExists(sshDir) {
 			args = append(args, "-v", sshDir+":/mnt/host-config/.ssh:ro")
+		}
+	}
+
+	// Claude config from host path
+	if cfg.ClaudeConfigPath != "" {
+		configPath := expandPath(cfg.ClaudeConfigPath)
+		if dirExists(configPath) {
+			args = append(args, "-v", configPath+":/mnt/host-claude-config:ro")
+		}
+	}
+
+	// Claude config from git repo
+	if cfg.ClaudeConfigRepo != "" {
+		args = append(args, "-e", "CC_CLAUDE_CONFIG_REPO="+cfg.ClaudeConfigRepo)
+		args = append(args, "-v", getClaudeConfigVolumeName()+":/mnt/claude-config-repo")
+		if cfg.ClaudeConfigSync {
+			args = append(args, "-e", "CC_CLAUDE_CONFIG_SYNC=1")
 		}
 	}
 
@@ -523,6 +558,27 @@ func sanitizeVolumeName(s string) string {
 		return "default"
 	}
 	return result.String()
+}
+
+// getClaudeConfigVolumeName returns a user-specific volume name for Claude config repo cache.
+func getClaudeConfigVolumeName() string {
+	if uid := os.Getuid(); uid >= 0 {
+		return "cc-sandbox-claude-config-" + strconv.Itoa(uid)
+	}
+	if u, err := user.Current(); err == nil {
+		return "cc-sandbox-claude-config-" + sanitizeVolumeName(u.Username)
+	}
+	return "cc-sandbox-claude-config"
+}
+
+// expandPath expands ~ in paths to the user's home directory.
+func expandPath(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
 }
 
 func getDefaultDockerSocket() string {

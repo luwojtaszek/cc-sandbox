@@ -72,6 +72,102 @@ if [ -d "/mnt/claude-data" ]; then
     fi
 fi
 
+# Handle Claude configuration from host mount or git repo
+# Usage: setup_claude_config_from_mount <src_dir> [skip_settings]
+setup_claude_config_from_mount() {
+    local src_dir="$1"
+    local skip_settings="$2"
+
+    # Link skills
+    if [ -d "$src_dir/skills" ]; then
+        mkdir -p "$HOME/.claude/skills"
+        for skill_dir in "$src_dir/skills"/*/; do
+            [ -d "$skill_dir" ] || continue
+            skill_name=$(basename "$skill_dir")
+            [ -e "$HOME/.claude/skills/$skill_name" ] || \
+                ln -sf "$skill_dir" "$HOME/.claude/skills/$skill_name"
+        done
+        debug_log "[cc-sandbox] Linked skills from $src_dir"
+    fi
+
+    # Link agents
+    if [ -d "$src_dir/agents" ]; then
+        mkdir -p "$HOME/.claude/agents"
+        for agent in "$src_dir/agents"/*.md; do
+            [ -f "$agent" ] || continue
+            name=$(basename "$agent")
+            [ -e "$HOME/.claude/agents/$name" ] || \
+                ln -sf "$agent" "$HOME/.claude/agents/$name"
+        done
+        debug_log "[cc-sandbox] Linked agents from $src_dir"
+    fi
+
+    # Link commands (legacy)
+    if [ -d "$src_dir/commands" ]; then
+        mkdir -p "$HOME/.claude/commands"
+        for cmd in "$src_dir/commands"/*.md; do
+            [ -f "$cmd" ] || continue
+            name=$(basename "$cmd")
+            [ -e "$HOME/.claude/commands/$name" ] || \
+                ln -sf "$cmd" "$HOME/.claude/commands/$name"
+        done
+        debug_log "[cc-sandbox] Linked commands from $src_dir"
+    fi
+
+    # Handle settings.json + .credentials coupling (skip for git repo without install.sh)
+    if [ "$skip_settings" != "skip_settings" ] && [ -f "$src_dir/settings.json" ]; then
+        if [ ! -f "$src_dir/.credentials" ]; then
+            echo "[cc-sandbox] ERROR: settings.json found but .credentials missing in $src_dir"
+            echo "[cc-sandbox] These files must be mounted together. Exiting."
+            exit 1
+        fi
+        # Copy both files (they're coupled)
+        cp "$src_dir/settings.json" "$HOME/.claude/settings.json"
+        cp "$src_dir/.credentials" "$HOME/.claude/.credentials"
+        debug_log "[cc-sandbox] Applied settings.json + .credentials from $src_dir"
+    fi
+
+    # Link CLAUDE.md
+    if [ -f "$src_dir/CLAUDE.md" ] && [ ! -f "$HOME/CLAUDE.md" ]; then
+        ln -sf "$src_dir/CLAUDE.md" "$HOME/CLAUDE.md"
+        debug_log "[cc-sandbox] Linked global CLAUDE.md"
+    fi
+}
+
+# Process host-mounted config (highest priority)
+if [ -d "/mnt/host-claude-config" ]; then
+    debug_log "[cc-sandbox] Processing host-mounted Claude config..."
+    setup_claude_config_from_mount "/mnt/host-claude-config"
+fi
+
+# Process git repo config
+if [ -n "$CC_CLAUDE_CONFIG_REPO" ]; then
+    CONFIG_DIR="/mnt/claude-config-repo"
+
+    # Clone repo if not present
+    if [ ! -d "$CONFIG_DIR/.git" ]; then
+        debug_log "[cc-sandbox] Cloning Claude config from: $CC_CLAUDE_CONFIG_REPO"
+        git clone --depth 1 "$CC_CLAUDE_CONFIG_REPO" "$CONFIG_DIR" 2>/dev/null || \
+            debug_log "[cc-sandbox] Warning: Failed to clone config repo"
+    elif [ "$CC_CLAUDE_CONFIG_SYNC" = "1" ]; then
+        # Sync requested - pull latest changes
+        debug_log "[cc-sandbox] Syncing Claude config from: $CC_CLAUDE_CONFIG_REPO"
+        git -C "$CONFIG_DIR" pull --ff-only 2>/dev/null || \
+            debug_log "[cc-sandbox] Warning: Failed to pull config repo updates"
+    else
+        debug_log "[cc-sandbox] Using cached Claude config (use --claude-config-sync to update)"
+    fi
+
+    # Run install.sh if present (responsible for settings.json + credentials handling)
+    if [ -x "$CONFIG_DIR/install.sh" ]; then
+        debug_log "[cc-sandbox] Running install.sh from config repo"
+        (cd "$CONFIG_DIR" && ./install.sh)
+    else
+        # Default: link skills/agents/commands only (skip settings.json for safety)
+        setup_claude_config_from_mount "$CONFIG_DIR" "skip_settings"
+    fi
+fi
+
 # Handle Playwright browsers (shared installation at /opt/ms-playwright)
 if [ -d "/opt/ms-playwright" ]; then
     mkdir -p "$HOME/.cache"
