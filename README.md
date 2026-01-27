@@ -79,6 +79,7 @@ cc-sandbox claude -p "fix the bug in main.go"
 cc-sandbox claude              # Interactive session
 cc-sandbox claude -p "prompt"  # One-shot prompt
 cc-sandbox claude -c           # Continue previous conversation
+cc-sandbox auth                # Authenticate Claude credentials
 cc-sandbox update              # Update CLI and images
 ```
 
