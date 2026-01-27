@@ -23,6 +23,21 @@ cc-sandbox update --skip-images # Update only CLI
 cc-sandbox update --force      # Force update even if on latest
 ```
 
+### `cc-sandbox auth`
+
+Authenticate Claude Code credentials. Runs `claude setup-token` interactively and stores the OAuth token in a persistent volume for reuse across sessions.
+
+```bash
+cc-sandbox auth              # Authenticate credentials
+cc-sandbox auth --uid 10000  # Authenticate for specific UID
+```
+
+| Flag          | Description                       | Default      |
+|---------------|-----------------------------------|--------------|
+| `--uid <uid>` | Target UID for credentials volume | current user |
+
+Credentials are stored in a Docker volume named `cc-sandbox-credentials-{UID}` at `/mnt/claude-data/.oauth-token`. The OAuth token is automatically injected into containers via the `CLAUDE_CODE_OAUTH_TOKEN` environment variable in subsequent `cc-sandbox claude` sessions.
+
 ### `cc-sandbox version`
 
 Print version information.

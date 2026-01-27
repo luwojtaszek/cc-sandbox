@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -20,6 +22,8 @@ var (
 	commit  = "none"
 	date    = "unknown"
 )
+
+const oauthTokenPath = "/mnt/claude-data/.oauth-token"
 
 const envVarHelpText = `
 Environment Variables:
@@ -77,7 +81,7 @@ func main() {
 	// Workaround for Cobra treating first positional arg as subcommand.
 	// Find the first positional argument and insert "--" before it if needed.
 	args := os.Args[1:]
-	knownCommands := map[string]bool{"version": true, "help": true, "update": true, "completion": true}
+	knownCommands := map[string]bool{"version": true, "help": true, "update": true, "completion": true, "auth": true}
 
 	// Find the index of the first positional argument (not a flag)
 	firstPosIdx := -1
@@ -173,6 +177,7 @@ Examples:
 	})
 
 	rootCmd.AddCommand(newUpdateCmd())
+	rootCmd.AddCommand(newAuthCmd())
 
 	return rootCmd
 }
@@ -296,7 +301,13 @@ func buildContainerArgs(cfg *Config, containerRuntime, imageName string, contain
 	}
 
 	// User-specific credentials volume
-	args = append(args, "-v", getCredentialsVolumeName()+":/mnt/claude-data")
+	credentialsVolume := getCredentialsVolumeName()
+	args = append(args, "-v", credentialsVolume+":/mnt/claude-data")
+
+	// Check for stored OAuth token and pass it to container
+	if token, err := loadOAuthTokenFromVolume(containerRuntime, credentialsVolume); err == nil && token != "" {
+		args = append(args, "-e", "CLAUDE_CODE_OAUTH_TOKEN="+token)
+	}
 
 	homeDir, _ := os.UserHomeDir()
 
@@ -750,4 +761,184 @@ func pullImage(imageName, runtime string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// newAuthCmd creates the auth subcommand for authenticating Claude credentials.
+func newAuthCmd() *cobra.Command {
+	var targetUID int
+
+	authCmd := &cobra.Command{
+		Use:   "auth",
+		Short: "Authenticate Claude Code credentials",
+		Long: `Run Claude's setup-token to authenticate and store credentials in the persistent volume.
+
+Examples:
+  cc-sandbox auth              # Authenticate current user's credentials
+  cc-sandbox auth --uid 10000  # Authenticate for specific UID (e.g., cc-web's UID)`,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runAuth(targetUID)
+		},
+	}
+
+	authCmd.Flags().IntVar(&targetUID, "uid", -1, "Target UID for credentials volume (default: current user)")
+
+	return authCmd
+}
+
+// runAuth runs the claude setup-token command in a container with the target credentials volume.
+func runAuth(targetUID int) error {
+	// Determine target UID
+	uid := targetUID
+	if uid < 0 {
+		uid = os.Getuid()
+	}
+
+	// Get registry from environment
+	registry := getEnv("CC_SANDBOX_REGISTRY", DefaultRegistry)
+
+	// Detect runtime
+	cfg := &Config{Runtime: "auto"}
+	containerRuntime := detectRuntime(cfg)
+
+	// Build image name - use bun-full for auth since it has Claude CLI
+	imageName := resolveImageName(registry, "bun-full", containerRuntime)
+
+	// Pull image if needed
+	if isRegistryImage(imageName) && !imageExistsLocally(imageName, containerRuntime) {
+		fmt.Fprintf(os.Stderr, "Pulling image %s...\n", imageName)
+		if err := pullImage(imageName, containerRuntime); err != nil {
+			return fmt.Errorf("failed to pull image: %w", err)
+		}
+	}
+
+	// Build credentials volume name
+	volumeName := fmt.Sprintf("cc-sandbox-credentials-%d", uid)
+
+	// Ensure volume exists
+	createCmd := exec.Command(containerRuntime, "volume", "create", volumeName)
+	_ = createCmd.Run() // Ignore error if volume already exists
+
+	fmt.Printf("Authenticating Claude credentials for UID %d...\n", uid)
+	fmt.Printf("Credentials will be stored in volume: %s\n\n", volumeName)
+
+	// Build docker run command
+	args := []string{
+		"run", "-it", "--rm",
+		"-v", volumeName + ":/mnt/claude-data",
+		"-e", "CC_SANDBOX_PERMISSION_MODE=accept",
+		imageName,
+		"claude", "setup-token",
+	}
+
+	// Execute interactively, capturing output to extract OAuth token
+	containerCmd := exec.Command(containerRuntime, args...)
+	containerCmd.Stdin = os.Stdin
+
+	// Capture stdout while still displaying it
+	var outputBuffer bytes.Buffer
+	containerCmd.Stdout = io.MultiWriter(os.Stdout, &outputBuffer)
+	containerCmd.Stderr = os.Stderr
+
+	if err := containerCmd.Run(); err != nil {
+		return fmt.Errorf("authentication failed: %w", err)
+	}
+
+	// Extract and store OAuth token if present in output
+	if token := extractOAuthToken(outputBuffer.String()); token != "" {
+		debugLog("Found OAuth token in output, storing to volume")
+		if err := storeOAuthToken(containerRuntime, volumeName, imageName, token); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to store OAuth token: %v\n", err)
+		} else {
+			fmt.Printf("OAuth token stored successfully.\n")
+		}
+	}
+
+	fmt.Printf("\nAuthentication complete! Credentials stored in volume: %s\n", volumeName)
+	return nil
+}
+
+// stripANSI removes ANSI escape sequences from a string.
+// These appear in terminal output and can interfere with token extraction.
+func stripANSI(s string) string {
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		// ANSI escape sequences start with ESC[ (\x1b[)
+		if i+1 < len(s) && s[i] == '\x1b' && s[i+1] == '[' {
+			// Skip until we find a letter (the terminator)
+			i += 2
+			for i < len(s) && !((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z')) {
+				i++
+			}
+			if i < len(s) {
+				i++ // Skip the terminating letter
+			}
+		} else {
+			result.WriteByte(s[i])
+			i++
+		}
+	}
+	return result.String()
+}
+
+// extractOAuthToken extracts an OAuth token from the given output string.
+// Returns empty string if no token is found.
+// Handles tokens that are wrapped across multiple lines in the output.
+func extractOAuthToken(output string) string {
+	// Strip ANSI escape codes that might be in terminal output
+	output = stripANSI(output)
+
+	// Find where the token starts
+	const prefix = "sk-ant-oat01-"
+	startIdx := strings.Index(output, prefix)
+	if startIdx == -1 {
+		return ""
+	}
+
+	// Find the end - look for known markers that appear after the token
+	endMarkers := []string{"Store this", "Use this"}
+	endIdx := len(output)
+	for _, marker := range endMarkers {
+		if idx := strings.Index(output[startIdx:], marker); idx != -1 {
+			candidateEnd := startIdx + idx
+			if candidateEnd < endIdx {
+				endIdx = candidateEnd
+			}
+		}
+	}
+
+	// Extract the token block and keep only valid token characters
+	tokenBlock := output[startIdx:endIdx]
+	var token strings.Builder
+	for _, c := range tokenBlock {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' {
+			token.WriteByte(byte(c))
+		}
+	}
+
+	return token.String()
+}
+
+// storeOAuthToken stores the OAuth token in the credentials volume.
+func storeOAuthToken(containerRuntime, volumeName, imageName, token string) error {
+	// Use printf to avoid trailing newline
+	cmd := exec.Command(containerRuntime, "run", "--rm",
+		"-v", volumeName+":/mnt/claude-data",
+		imageName,
+		"sh", "-c", fmt.Sprintf("printf '%%s' '%s' > %s", token, oauthTokenPath))
+	return cmd.Run()
+}
+
+// loadOAuthTokenFromVolume loads the OAuth token from the credentials volume using a minimal alpine image.
+// This is used during container args building when we don't have the full image name.
+func loadOAuthTokenFromVolume(containerRuntime, volumeName string) (string, error) {
+	cmd := exec.Command(containerRuntime, "run", "--rm",
+		"-v", volumeName+":/mnt/claude-data",
+		"alpine:latest",
+		"cat", oauthTokenPath)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
