@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.0](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.4.0...cc-sandbox-v1.5.0) (2026-02-05)
+
+
+### Features
+
+* add Claude config repo support with install.sh hook ([dc7c3fb](https://github.com/luwojtaszek/cc-sandbox/commit/dc7c3fbc87063cfd4b80d2a6e3d5dbbe96185ed4))
+* auth command ([ce7cef5](https://github.com/luwojtaszek/cc-sandbox/commit/ce7cef544063c4722b2d0148809558221c6a7ad5))
+
 ## [1.4.0](https://github.com/luwojtaszek/cc-sandbox/compare/cc-sandbox-v1.3.2...cc-sandbox-v1.4.0) (2026-01-23)
 
 
